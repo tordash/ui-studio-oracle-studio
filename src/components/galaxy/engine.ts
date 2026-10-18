@@ -19,6 +19,7 @@ import { galaxyTypeColor, hexToRgb01, STATE_HIDDEN, STATE_MATCH } from '../../li
 import type { GalaxyCluster } from '../../lib/galaxy/clusters';
 import { ScreenGrid, projectPoints } from '../../lib/galaxy/pick-grid';
 import { mulberry32 } from '../../lib/galaxy/clusters';
+import { frameBounds, frameDistance } from '../../lib/galaxy/frame';
 
 /** Thai-capable system font stack — no webfont, so canvas labels never race a font load. */
 export const GALAXY_FONT_STACK =
@@ -550,21 +551,12 @@ export class GalaxyEngine {
     this.requestRender();
   }
 
-  /** Frame a set of stars (e.g. search matches). */
+  /** Frame a set of stars (e.g. search matches): centroid + p85 radius, fitted on both axes. */
   frame(indices: Iterable<number>) {
-    const p = this.data.positions;
-    let cx = 0, cy = 0, cz = 0, k = 0;
-    const list: number[] = [];
-    for (const i of indices) { cx += p[i * 3]; cy += p[i * 3 + 1]; cz += p[i * 3 + 2]; k++; list.push(i); }
-    if (k === 0) return;
-    cx /= k; cy /= k; cz /= k;
-    let r = 0;
-    for (const i of list) {
-      const dx = p[i * 3] - cx, dy = p[i * 3 + 1] - cy, dz = p[i * 3 + 2] - cz;
-      r = Math.max(r, Math.sqrt(dx * dx + dy * dy + dz * dz));
-    }
-    this.goalTarget.set(cx, cy, cz);
-    this.dist.goal = Math.max(4, Math.min(this.home.dist, (r * 1.25) / Math.tan((FOV * Math.PI) / 360) / Math.min(1, this.camera.aspect) ** 0.6));
+    const b = frameBounds(this.data.positions, indices);
+    if (!b) return;
+    this.goalTarget.set(b.cx, b.cy, b.cz);
+    this.dist.goal = frameDistance(b, FOV, this.camera.aspect, { minDist: 4, maxDist: Math.max(4, this.home.dist) });
     this.speed = 2.6;
     this.finishIntro();
     if (this.reduced) this.snap();
