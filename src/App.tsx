@@ -18,6 +18,7 @@ import { Playground } from './pages/Playground';
 import { Compare } from './pages/Compare';
 import { CommandPalette } from './components/CommandPalette';
 import { BackendGate } from './components/BackendGate';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Map } from './pages/Map';
 import { Schedule } from './pages/Schedule';
 import { Pulse } from './pages/Pulse';
@@ -66,6 +67,8 @@ function AppContent() {
     <>
       {!isLoginPage && <Header />}
       {showCmdK && <CommandPalette onClose={() => setShowCmdK(false)} />}
+      {/* resetKey = pathname: navigating away from a crashed page clears the error card */}
+      <ErrorBoundary resetKey={location.pathname}>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<RequireAuth><Overview /></RequireAuth>} />
@@ -94,6 +97,7 @@ function AppContent() {
         <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
         <Route path="/menu" element={<RequireAuth><MenuEditor /></RequireAuth>} />
       </Routes>
+      </ErrorBoundary>
 
     </>
   );

@@ -11,6 +11,7 @@ export function Feed() {
   const [loading, setLoading] = useState(true);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Get type from URL or default to 'all'
   const type = searchParams.get('type') || 'all';
@@ -29,17 +30,23 @@ export function Feed() {
 
   async function loadDocs(reset = false) {
     setLoading(true);
+    setError(null);
     try {
       const newOffset = reset ? 0 : offset;
       const data = await list(type, 20, newOffset);
+      const results = Array.isArray(data?.results) ? data.results : [];
       if (reset) {
-        setDocs(data.results);
+        setDocs(results);
         setOffset(20);
       } else {
-        setDocs(prev => [...prev, ...data.results]);
+        setDocs(prev => [...prev, ...results]);
         setOffset(prev => prev + 20);
       }
-      setHasMore(data.results.length >= 20);
+      setHasMore(results.length >= 20);
+    } catch (e) {
+      if (reset) setDocs([]);
+      setHasMore(false);
+      setError(e instanceof Error ? e.message : 'Failed to load feed');
     } finally {
       setLoading(false);
     }
@@ -59,6 +66,12 @@ export function Feed() {
       </div>
 
       {loading && <div className="text-center text-text-muted py-6">Loading...</div>}
+
+      {!loading && error && (
+        <div className="text-center text-[#ef4444] text-sm py-6 bg-bg-card rounded-xl">
+          Couldn't load the feed ({error}).
+        </div>
+      )}
 
       {!loading && hasMore && (
         <button

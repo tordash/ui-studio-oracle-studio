@@ -514,7 +514,7 @@ export function Pulse() {
       </div>
 
       {/* Event stream */}
-      <div className="max-w-[960px] mx-auto px-6 py-4">
+      <div className="max-w-[960px] mx-auto px-6 max-sm:px-2 py-4">
         {loading && (
           <div className="text-center text-white/30 py-12 font-mono text-sm">Loading feed...</div>
         )}
@@ -540,7 +540,7 @@ export function Pulse() {
             rows.push(
               <div
                 key={`${ev.timestamp}-${i}`}
-                className={`flex items-start gap-3 py-2.5 px-4 rounded-lg transition-colors ${
+                className={`flex items-start gap-3 max-sm:gap-x-2 max-sm:gap-y-1 max-sm:flex-wrap py-2.5 px-4 max-sm:px-2 rounded-lg transition-colors ${
                   isHumanMsg ? 'bg-blue-500/[0.06]' : 'hover:bg-white/[0.03]'
                 } ${isSession ? 'border-l-2 border-emerald-500/30' : ''} ${isCollapsed ? 'cursor-pointer' : ''}`}
                 onClick={isCollapsed && group ? () => {
@@ -597,7 +597,7 @@ export function Pulse() {
 
                 {/* Message (hover on AI responses to preview terminal) */}
                 <div
-                  className="min-w-0 flex-1"
+                  className="min-w-0 flex-1 max-sm:order-last max-sm:basis-full max-sm:pl-[44px]"
                   onMouseEnter={isStop ? (e) => {
                     const win = tmuxWindows.find(w => w.oracle === ev.oracle);
                     if (!win) return;

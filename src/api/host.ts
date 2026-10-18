@@ -18,7 +18,11 @@
 const STORAGE_KEY = 'oracle-studio-host';
 const RECENT_KEY = 'oracle-studio-host-recent';
 const RECENT_LIMIT = 8;
-const DEFAULT_HOST = 'http://localhost:47778';
+// Default when nothing is stored:
+// - vite dev server → http://localhost:47778 (local arra, as before)
+// - built bundle    → '' = same-origin, so `/api/...` resolves on the page's own origin
+//   (e.g. studio behind serve-local at https://<ts.net>:8445/ works with no ?host=)
+const DEFAULT_HOST = import.meta.env.DEV ? 'http://localhost:47778' : '';
 
 const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
 const urlHost = params.get('host');
@@ -32,8 +36,8 @@ if (urlHost && typeof window !== 'undefined') {
   window.location.replace(url.toString());
 }
 
-// Resolution: stored host > DEFAULT_HOST (localhost:47778).
-// Always resolves to *some* host; users can override via ?host= in the URL.
+// Resolution: stored host > DEFAULT_HOST (dev: localhost:47778, built: same-origin '').
+// Users can override via ?host= in the URL.
 const storedHost = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
 const hostParam = storedHost ?? DEFAULT_HOST;
 
@@ -69,6 +73,15 @@ function addRecentHost(host: string): void {
 }
 
 function resolveHost(): { httpProto: string; wsProto: string; host: string } {
+  if (hostParam === '') {
+    // Same-origin: use the page's own protocol + host.
+    const secure = typeof window !== 'undefined' && window.location.protocol === 'https:';
+    return {
+      httpProto: secure ? 'https:' : 'http:',
+      wsProto: secure ? 'wss:' : 'ws:',
+      host: typeof window !== 'undefined' ? window.location.host : '',
+    };
+  }
   if (hostParam.startsWith('https://')) {
     return {
       httpProto: 'https:',
@@ -90,6 +103,7 @@ function resolveHost(): { httpProto: string; wsProto: string; host: string } {
 
 /** Build a full URL for fetch(). Accepts an `/api/...` path and prepends the configured host. */
 export function apiUrl(path: string): string {
+  if (hostParam === '') return path; // same-origin: relative `/api/...`
   const r = resolveHost();
   return `${r.httpProto}//${r.host}${path}`;
 }
@@ -100,7 +114,7 @@ export function wsUrl(path: string): string {
   return `${r.wsProto}//${r.host}${path}`;
 }
 
-/** Human-readable host label for UI (`localhost:47778 (default)` or `mba.wg:47778`). */
+/** Human-readable host label for UI (`localhost:47778 (default)`, `<page host> (default)` when same-origin, or `mba.wg:47778`). */
 export function hostLabel(): string {
   const r = resolveHost();
   const withoutProto = `${r.host}`;
