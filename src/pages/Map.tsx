@@ -25,6 +25,29 @@ function subscribeReducedMotion(cb: () => void) {
 }
 const getReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// The global nav wraps (~64 px desktop, ~124 px at 390), so the page measures where it starts
+// instead of assuming a header height, and fills the rest of the dynamic viewport (iOS bars).
+function GalaxyShell({ className, style, children }: { className: string; style: React.CSSProperties; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => {
+      const top = Math.max(0, Math.round(el.getBoundingClientRect().top + window.scrollY));
+      el.style.height = `calc(100vh - ${top}px)`; // fallback where dvh is unsupported (invalid value is ignored)
+      el.style.height = `calc(100dvh - ${top}px)`;
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    const header = document.querySelector('header');
+    if (header) ro.observe(header);
+    window.addEventListener('resize', update);
+    return () => { ro.disconnect(); window.removeEventListener('resize', update); };
+  }, []);
+  // height is owned by the layout effect (runs before paint), never by React's style prop
+  return <div ref={ref} className={className} style={style}>{children}</div>;
+}
+
 const glass = { background: 'rgba(9, 10, 22, 0.66)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' } as const;
 
 export function Map() {
@@ -45,6 +68,7 @@ export function Map() {
   const [matches, setMatches] = useState<Set<number> | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchNote, setSearchNote] = useState<string | null>(null);
+  const [legendOpen, setLegendOpen] = useState(false);
 
   const [hover, setHover] = useState<{ idx: number; touch: boolean }>({ idx: -1, touch: false });
   const [selected, setSelected] = useState(-1);
@@ -115,6 +139,8 @@ export function Map() {
     if (!data) return;
     if (!q) { clearSearch(); return; }
     const seq = ++searchSeq.current;
+    // touch: drop the keyboard so the result pill and the pulse are visible
+    if (window.matchMedia('(pointer: coarse)').matches && document.activeElement instanceof HTMLElement) document.activeElement.blur();
     const local = matchLocal(data, q);
     setMatches(local);
     setSearchNote(null);
@@ -164,20 +190,20 @@ export function Map() {
   // ── states ──
   if (error && !data) {
     return (
-      <div className="flex flex-col items-center justify-center h-[calc(100dvh-64px)] gap-3 px-6 text-center" style={{ background: '#05060f' }}>
+      <GalaxyShell className="flex flex-col items-center justify-center gap-3 px-6 text-center" style={{ background: '#05060f' }}>
         <div className="text-base text-[#f87171]">Couldn’t load the galaxy</div>
         <div className="text-[13px] text-text-muted max-w-[420px]">{error}</div>
-      </div>
+      </GalaxyShell>
     );
   }
 
   if (!data) {
     return (
-      <div className="relative flex flex-col items-center justify-center h-[calc(100dvh-64px)] gap-3 overflow-hidden" style={{ background: SPACE_BG }}>
+      <GalaxyShell className="relative flex flex-col items-center justify-center gap-3 overflow-hidden" style={{ background: SPACE_BG }}>
         <div className="w-10 h-10 rounded-full border border-white/10 border-t-[#8ab4ff] motion-safe:animate-spin" />
         <div className="text-[15px] text-text-primary tracking-wide">Charting the galaxy…</div>
         <div className="text-[12px] text-text-muted">Projecting embeddings from {engineKey}</div>
-      </div>
+      </GalaxyShell>
     );
   }
 
@@ -188,8 +214,8 @@ export function Map() {
   const variance = pca?.variance_explained?.map(v => Math.round(v * 100));
 
   return (
-    <div className="flex h-[calc(100dvh-64px)] overflow-hidden" style={{ background: SPACE_BG }}>
-      <div className="flex-1 relative overflow-hidden min-w-0">
+    <GalaxyShell className="flex overflow-hidden" style={{ background: SPACE_BG }}>
+      <div className="flex-1 relative overflow-hidden min-w-0 min-h-0">
         {data.count === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
             <div className="text-[22px] font-semibold text-text-primary">No stars yet</div>
@@ -248,10 +274,23 @@ export function Map() {
               placeholder="Search — matching stars pulse"
               aria-label="Search the galaxy"
               enterKeyHint="search"
-              className="w-full pl-4 pr-9 py-2.5 rounded-xl text-[14px] text-text-primary border border-white/[0.09] outline-none transition-colors duration-200 focus:border-[#8ab4ff]/60 placeholder:text-text-muted [&::-webkit-search-cancel-button]:hidden"
+              className="w-full pl-4 pr-11 py-2.5 rounded-xl text-[14px] text-text-primary border border-white/[0.09] outline-none transition-colors duration-200 focus:border-[#8ab4ff]/60 placeholder:text-text-muted [&::-webkit-search-cancel-button]:hidden"
               style={glass}
             />
-            {searching && <span className="absolute right-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-[#8ab4ff] animate-search-pulse" />}
+            <button
+              type="submit"
+              aria-label="Run search"
+              title="Search"
+              className="absolute right-1 top-1/2 -translate-y-1/2 w-9 h-9 rounded-lg flex items-center justify-center text-text-secondary transition-colors duration-200 hover:text-text-primary focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#8ab4ff]/60"
+            >
+              {searching
+                ? <span className="w-2 h-2 rounded-full bg-[#8ab4ff] animate-search-pulse" />
+                : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+                  </svg>
+                )}
+            </button>
           </div>
           {(query || matches) && (
             <button type="button" onClick={clearSearch} className="shrink-0 px-3 py-2.5 rounded-xl text-[12px] text-text-secondary border border-white/[0.09] transition-colors duration-200 hover:text-text-primary hover:border-white/20" style={glass}>
@@ -266,7 +305,36 @@ export function Map() {
         )}
 
         {/* legend — colour / size / brightness, each tied to its API field */}
-        <div className="absolute bottom-3 left-3 sm:bottom-4 sm:left-4 z-10 max-w-[calc(100%-24px)] sm:max-w-[340px] rounded-xl border border-white/[0.08] px-3 py-2.5 text-[11.5px] text-text-secondary" style={glass}>
+        {/* phones: a compact chip that expands, so the panel never covers the core of the galaxy */}
+        {!legendOpen && (
+          <button
+            type="button"
+            onClick={() => setLegendOpen(true)}
+            aria-expanded={false}
+            aria-controls="galaxy-legend"
+            className="sm:hidden absolute bottom-3 left-3 z-10 flex items-center gap-2 px-3 py-2 rounded-full border border-white/[0.08] text-[12px] text-text-secondary"
+            style={glass}
+          >
+            <span className="flex -space-x-0.5">
+              {types.slice(0, 5).map(([t]) => (
+                <span key={t} className="w-2 h-2 rounded-full" style={{ background: galaxyTypeColor(t), opacity: hiddenTypes.has(t) ? 0.35 : 1 }} />
+              ))}
+            </span>
+            <span className="text-text-primary">Legend</span>
+            <span className="tabular-nums text-text-muted">{hiddenTypes.size ? `${hiddenTypes.size} hidden` : `${types.length} types`}</span>
+          </button>
+        )}
+        <div
+          id="galaxy-legend"
+          className={`${legendOpen ? 'block' : 'hidden'} sm:block absolute bottom-3 left-3 sm:bottom-4 sm:left-4 z-10 max-w-[calc(100%-24px)] sm:max-w-[340px] max-h-[45%] sm:max-h-[calc(100%-32px)] overflow-y-auto overscroll-contain rounded-xl border border-white/[0.08] px-3 py-2.5 text-[11.5px] text-text-secondary`}
+          style={glass}
+        >
+          <div className="sm:hidden flex items-center justify-between mb-1.5">
+            <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-text-muted">Legend</span>
+            <button type="button" onClick={() => setLegendOpen(false)} aria-expanded={true} aria-controls="galaxy-legend" className="px-2 py-1 -mr-1 rounded-md text-[12px] text-text-secondary hover:text-text-primary">
+              Hide
+            </button>
+          </div>
           <div className="flex flex-wrap gap-1">
             {types.map(([t, n]) => {
               const on = !hiddenTypes.has(t);
@@ -407,7 +475,7 @@ export function Map() {
       {selected >= 0 && selected < data.count && (
         <DocSheet data={data} idx={selected} reducedMotion={reducedMotion} onClose={() => setSelected(-1)} />
       )}
-    </div>
+    </GalaxyShell>
   );
 }
 

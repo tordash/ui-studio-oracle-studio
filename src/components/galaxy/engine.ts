@@ -327,6 +327,7 @@ export class GalaxyEngine {
 
   private states: Float32Array;
   private hasMatches = false;
+  private matchCount = 0;
   private hoverIdx = -1;
   private armedIdx = -1;
   private selectedIdx = -1;
@@ -522,9 +523,10 @@ export class GalaxyEngine {
     if (states.length !== this.states.length) return;
     this.states.set(states);
     this.stateAttr.needsUpdate = true;
-    let m = false;
-    for (let i = 0; i < states.length; i++) if (states[i] === STATE_MATCH) { m = true; break; }
-    this.hasMatches = m;
+    let m = 0;
+    for (let i = 0; i < states.length; i++) if (states[i] === STATE_MATCH) m++;
+    this.matchCount = m;
+    this.hasMatches = m > 0;
     this.gridDirty = true;
     if (this.hoverIdx >= 0 && states[this.hoverIdx] === STATE_HIDDEN) this.setHover(-1, false);
     this.requestRender();
@@ -997,6 +999,8 @@ export class GalaxyEngine {
         reducedMotion: this.reduced ? 1 : 0,
         framesRendered: this.framesRendered,
         looping: this.raf ? 1 : 0,
+        // stars currently in STATE_MATCH (pulsing); equals the "N matching stars" pill unless a type/project filter hides some
+        matches: this.matchCount,
       };
     };
     const bench = (ms = 3000) => new Promise<{ fps: number; frames: number; calls: number }>(resolve => {
