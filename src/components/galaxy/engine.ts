@@ -33,7 +33,11 @@ const BACKDROP_COUNT = 1400;
 export function webglAvailable(): boolean {
   try {
     const c = document.createElement('canvas');
-    return !!(c.getContext('webgl2') || c.getContext('webgl'));
+    const gl = (c.getContext('webgl2') || c.getContext('webgl')) as WebGLRenderingContext | null;
+    if (!gl) return false;
+    // free the probe context right away — iOS Safari caps live WebGL contexts
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return true;
   } catch {
     return false;
   }
@@ -606,6 +610,8 @@ export class GalaxyEngine {
     // Sprite geometry is a shared module-level buffer in three — don't dispose it.
     this.scene.clear();
     this.renderer.dispose();
+    // after unbindEvents(): the resulting webglcontextlost must not trigger the 2D fallback
+    this.renderer.forceContextLoss();
     const canvas = this.renderer.domElement;
     if (canvas.parentElement === this.container) this.container.removeChild(canvas);
     if (window.__galaxy && this.debugToken === window.__galaxy) delete window.__galaxy;
@@ -844,6 +850,8 @@ export class GalaxyEngine {
     const idx = this.pick(p.x, p.y, touch ? 22 : 12);
     if (idx < 0) { this.setHover(-1, touch); return; }
     if (idx === this.armedIdx) {
+      // clear hover first so engine + UI agree (no orphan halo after the sheet closes)
+      this.setHover(-1, touch);
       this.cb.onOpen(idx);
       this.flyTo(idx);
     } else {

@@ -100,7 +100,7 @@ export function Map() {
     el.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
     el.style.opacity = visible ? '1' : '0';
   }, []);
-  const onOpen = useCallback((idx: number) => { setSelected(idx); setHover({ idx: -1, touch: false }); }, []);
+  const onOpen = useCallback((idx: number) => setSelected(idx), []);
   const onContextLost = useCallback(() => setContextLost(true), []);
 
   // after the tooltip re-renders with new content (new size), re-anchor it to the star
