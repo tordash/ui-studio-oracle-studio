@@ -8,6 +8,7 @@ import { SidebarLayout } from '../components/SidebarLayout';
 import { getDocDisplayInfo } from '../utils/docDisplay';
 import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
+import { loadDocBody } from '../lib/galaxy/doc-body';
 
 /** Shared markdown prose styles (page + embedded sheet). */
 const DOC_PROSE = 'text-text-primary [&_h1]:text-accent [&_h1]:mt-8 [&_h1]:mb-4 [&_h1]:font-semibold [&_h1]:text-[28px] [&_h1:first-child]:mt-0 [&_h2]:text-accent [&_h2]:mt-8 [&_h2]:mb-4 [&_h2]:font-semibold [&_h2]:text-2xl [&_h2:first-child]:mt-0 [&_h3]:text-accent [&_h3]:mt-8 [&_h3]:mb-4 [&_h3]:font-semibold [&_h3]:text-xl [&_h3:first-child]:mt-0 [&_p]:mb-4 [&_code]:bg-[rgba(167,139,250,0.15)] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[15px] [&_code]:text-[#e9d5ff] [&_pre]:bg-[rgba(0,0,0,0.4)] [&_pre]:border [&_pre]:border-border [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:my-4 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-sm [&_pre_code]:text-white/85 [&_ul]:my-4 [&_ul]:pl-6 [&_ol]:my-4 [&_ol]:pl-6 [&_li]:mb-2 [&_strong]:text-accent [&_strong]:font-semibold [&_a]:text-accent [&_a]:underline [&_a:hover]:text-[#c4b5fd] [&_blockquote]:border-l-[3px] [&_blockquote]:border-l-accent [&_blockquote]:my-4 [&_blockquote]:pl-4 [&_blockquote]:text-text-secondary [&_blockquote]:italic [&_table]:w-full [&_table]:border-collapse [&_table]:my-4 [&_table]:text-[15px] [&_th]:border [&_th]:border-border [&_th]:px-4 [&_th]:py-3 [&_th]:text-left [&_th]:bg-[rgba(167,139,250,0.15)] [&_th]:text-accent [&_th]:font-semibold [&_td]:border [&_td]:border-border [&_td]:px-4 [&_td]:py-3 [&_td]:text-left [&_tr:nth-child(even)]:bg-white/[0.02] [&_hr]:border-none [&_hr]:border-t [&_hr]:border-t-border [&_hr]:my-6 [&_img]:max-w-full [&_img]:rounded-lg [&_img]:my-4';
@@ -49,6 +50,9 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
   const [rawContent, setRawContent] = useState<string | null>(null);
   const [rawError, setRawError] = useState<string | null>(null);
   const [fallbackContent, setFallbackContent] = useState<string | null>(null);
+  // Embedded only: why the body has no doc row ('not-indexed' = 404, 'unreachable' = rejected/timeout/5xx)
+  const [embeddedMiss, setEmbeddedMiss] = useState<'not-indexed' | 'unreachable' | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
 
 
   // Navigate to a document
@@ -135,9 +139,35 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
     loadNeighbors();
   }, [doc, location.state, embedded]);
 
+  // Embedded (Galaxy sheet): settle into doc / not-indexed / unreachable — never a stuck skeleton.
   useEffect(() => {
+    if (!embedded) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setEmbeddedMiss(null);
+    setDoc(null);
+    const decoded = id ? decodeURIComponent(id) : '';
+    loadDocBody(decoded, {
+      getDoc,
+      isNotFound: e => e instanceof ApiError && e.status === 404,
+      isHttpError: e => e instanceof ApiError,
+    }).then(r => {
+      if (cancelled) return;
+      if (r.kind === 'doc') setDoc(r.doc);
+      else {
+        setEmbeddedMiss(r.kind);
+        setError(r.kind === 'not-indexed' ? 'Document not found' : 'Failed to load document');
+      }
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [id, embedded, retryNonce]);
+
+  useEffect(() => {
+    if (embedded) return;
     // Check if document was passed via router state (page mode only)
-    const state = embedded ? undefined : (location.state as LocationState);
+    const state = location.state as LocationState;
     if (state?.doc) {
       // Use cached doc for instant display
       setDoc(state.doc);
@@ -174,13 +204,13 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
 
   // Embedded: the id may be a vector-only id with no doc row — try the source file instead
   useEffect(() => {
-    if (!embedded || !error || !fallbackSource?.path) return;
+    if (!embedded || embeddedMiss !== 'not-indexed' || !fallbackSource?.path) return;
     let cancelled = false;
     getFile(fallbackSource.path, fallbackSource.project ?? undefined)
       .then(f => { if (!cancelled && !f.error && f.content) setFallbackContent(f.content); })
       .catch(() => { /* stays on the calm note */ });
     return () => { cancelled = true; };
-  }, [embedded, error, fallbackSource?.path, fallbackSource?.project]);
+  }, [embedded, embeddedMiss, fallbackSource?.path, fallbackSource?.project]);
 
   // Show raw file in modal
   async function handleShowRawFile(e: React.MouseEvent) {
@@ -297,6 +327,22 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
         {[92, 100, 84, 96, 70].map((w, i) => (
           <div key={i} className="h-3 rounded bg-white/[0.06] animate-pulse" style={{ width: `${w}%` }} />
         ))}
+      </div>
+    );
+  }
+
+  if (embedded && embeddedMiss === 'unreachable') {
+    return (
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-[13px] leading-relaxed text-text-secondary">
+        <span className="text-text-primary font-medium">Couldn’t reach the doc index.</span>{' '}
+        The header above comes from the map; the full text didn’t load.{' '}
+        <button
+          type="button"
+          onClick={() => setRetryNonce(n => n + 1)}
+          className="text-accent underline underline-offset-2 bg-transparent border-none p-0 cursor-pointer hover:text-[#c4b5fd]"
+        >
+          Try again
+        </button>
       </div>
     );
   }
