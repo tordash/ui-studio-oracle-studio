@@ -20,6 +20,7 @@ import type { GalaxyCluster } from '../../lib/galaxy/clusters';
 import { ScreenGrid, projectPoints } from '../../lib/galaxy/pick-grid';
 import { mulberry32 } from '../../lib/galaxy/clusters';
 import { frameBounds, frameDistance } from '../../lib/galaxy/frame';
+import { declutterLabels } from '../../lib/galaxy/labels';
 
 /** Thai-capable system font stack — no webfont, so canvas labels never race a font load. */
 export const GALAXY_FONT_STACK =
@@ -294,7 +295,11 @@ export class GalaxyEngine {
   private backdropMat: THREE.ShaderMaterial;
   private nebulaTex: THREE.CanvasTexture;
   private nebulae: THREE.Sprite[] = [];
-  private labels: { sprite: THREE.Sprite; aspect: number }[] = [];
+  private labels: { sprite: THREE.Sprite; aspect: number; size: number }[] = [];
+  private labelPx = 44;
+  /** camera pose + viewport at the last label layout / grid projection */
+  private poseKey: number[] = [];
+  private tmpV = new THREE.Vector3();
 
   private width = 1;
   private height = 1;
@@ -483,7 +488,7 @@ export class GalaxyEngine {
       sp.position.set(cl.cx, cl.cy + Math.min(cl.spread * 0.55, 2.2), cl.cz);
       sp.renderOrder = 4;
       this.scene.add(sp);
-      this.labels.push({ sprite: sp, aspect });
+      this.labels.push({ sprite: sp, aspect, size: cl.size });
     }
 
     // ── camera home: centroid of the data, distance fitted to the viewport ──
@@ -643,6 +648,7 @@ export class GalaxyEngine {
     this.camera.updateProjectionMatrix();
     const p11 = this.camera.projectionMatrix.elements[5];
     const labelPx = this.width < 520 ? 38 : 44;
+    this.labelPx = labelPx;
     const sy = (2 * labelPx) / (this.height * p11);
     for (const l of this.labels) l.sprite.scale.set(sy * l.aspect, sy, 1);
   }
@@ -693,6 +699,12 @@ export class GalaxyEngine {
     }
 
     const moving = this.stepCamera(dt);
+    // camera or viewport changed (incl. reduced-motion snaps, where `moving` stays false):
+    // re-project for picking and re-run the label declutter. Pulse-only frames skip this.
+    if (this.poseChanged()) {
+      this.gridDirty = true;
+      this.layoutLabels();
+    }
     // only data moves: search matches pulse. Selection halo is static (battery).
     const pulsing = !this.reduced && this.hasMatches;
     if (pulsing) {
@@ -714,6 +726,42 @@ export class GalaxyEngine {
       this.raf = requestAnimationFrame(this.frameLoop);
     }
   };
+
+  private poseChanged(): boolean {
+    const p = this.camera.position, t = this.target;
+    const now = [p.x, p.y, p.z, t.x, t.y, t.z, this.width, this.height, this.labelPx];
+    const k = this.poseKey;
+    let changed = k.length !== now.length;
+    if (!changed) for (let i = 0; i < now.length; i++) if (k[i] !== now[i]) { changed = true; break; }
+    if (changed) this.poseKey = now;
+    return changed;
+  }
+
+  /** Screen-space declutter: hide the smaller cluster's label on overlap, clamp inside the canvas. */
+  private layoutLabels() {
+    if (this.labels.length === 0) return;
+    const h = this.labelPx;
+    const inputs = this.labels.map(l => {
+      const v = this.tmpV.copy(l.sprite.position).project(this.camera);
+      const ok = v.z > -1 && v.z < 1;
+      return {
+        x: ok ? (v.x + 1) * 0.5 * this.width : NaN,
+        y: ok ? (1 - v.y) * 0.5 * this.height : NaN,
+        w: h * l.aspect,
+        h,
+        priority: l.size,
+      };
+    });
+    // the label texture carries 8/44 transparent padding each side (shadow room) — ignore most of it
+    const out = declutterLabels(inputs, this.width, this.height, { margin: 8, insetX: (6 / 44) * h, insetY: (3 / 44) * h });
+    for (let i = 0; i < this.labels.length; i++) {
+      const { sprite } = this.labels[i];
+      const o = out[i];
+      sprite.visible = o.visible;
+      // shift via the sprite's anchor: centre.x = 0.5 − dx/w, centre.y = dy/h (anchor is bottom-centre)
+      sprite.center.set(0.5 - o.dx / inputs[i].w, o.dy / h);
+    }
+  }
 
   private rebuildGrid() {
     this.camera.updateMatrixWorld();
