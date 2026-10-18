@@ -66,6 +66,7 @@ export function Traces() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [expandedFile, setExpandedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
   const [fileGithubUrl, setFileGithubUrl] = useState<string | null>(null);
   const [fileConcepts, setFileConcepts] = useState<string[]>([]);
   const [fileProject, setFileProject] = useState<string | null>(null);
@@ -217,6 +218,7 @@ export function Traces() {
     if (expandedFile === path) {
       setExpandedFile(null);
       setFileContent(null);
+      setFileError(null);
       setFileGithubUrl(null);
       setFileConcepts([]);
       setFileProject(null);
@@ -225,6 +227,7 @@ export function Traces() {
 
     setExpandedFile(path);
     setFileContent(null);
+    setFileError(null);
     setFileGithubUrl(null);
     setFileConcepts([]);
     setFileProject(project);
@@ -244,7 +247,7 @@ export function Traces() {
     }
 
     try {
-      // First try direct file read
+      // Direct file read only. If it fails, say so — never substitute a search hit for the file.
       const params = new URLSearchParams({ path });
       if (project) params.set('project', project);
       const res = await fetch(`${API_BASE}/file?${params}`);
@@ -255,39 +258,9 @@ export function Traces() {
           return;
         }
       }
-
-      // Search Oracle for related content (use last part of path or repo name)
-      const searchTerm = path.split('/').pop()?.replace('.md', '') || path.split('/').slice(-1)[0] || '';
-      const searchRes = await fetch(`${API_BASE}/search?q=${encodeURIComponent(searchTerm)}&limit=1`);
-      if (searchRes.ok) {
-        const searchData = await searchRes.json();
-        if (searchData.results?.[0]) {
-          if (searchData.results[0].content) {
-            setFileContent(searchData.results[0].content);
-          }
-          if (searchData.results[0].concepts) {
-            setFileConcepts(searchData.results[0].concepts);
-          }
-          return;
-        }
-      }
-
-      // Also try searching for the full path/repo name
-      if (!fileConcepts.length) {
-        const repoName = path.replace(/\//g, ' ');
-        const repoSearchRes = await fetch(`${API_BASE}/search?q=${encodeURIComponent(repoName)}&limit=1`);
-        if (repoSearchRes.ok) {
-          const repoData = await repoSearchRes.json();
-          if (repoData.results?.[0]?.concepts) {
-            setFileConcepts(repoData.results[0].concepts);
-          }
-        }
-      }
-
-      // Not found locally - content stays null, GitHub URL already set
-      setFileContent(null);
+      setFileError(`file unavailable${res.ok ? '' : ` (HTTP ${res.status})`}`);
     } catch {
-      setFileContent('Failed to load file');
+      setFileError('file unavailable (cannot reach server)');
     } finally {
       setLoadingFile(false);
     }
@@ -400,7 +373,7 @@ export function Traces() {
                   <pre className="p-4 m-0 font-mono text-xs leading-normal text-text-secondary whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto">{fileContent}</pre>
                 ) : (
                   <div className="py-3 px-4 text-text-muted italic text-[13px]">
-                    ⚠️ local file not found
+                    ⚠️ {fileError || 'file unavailable'}
                     {fileProject && (
                       <div className="mt-2 not-italic font-mono text-xs text-accent inline-block py-1 px-2.5 rounded" style={{ background: 'rgba(167, 139, 250, 0.1)' }}>
                         📦 Source: {fileProject}
@@ -543,7 +516,7 @@ export function Traces() {
                           {fileContent ? (
                             <pre className="p-4 m-0 font-mono text-xs leading-normal text-text-secondary whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto">{fileContent}</pre>
                           ) : (
-                            <div className="py-3 px-4 text-text-muted italic text-[13px]">Retrospective not found</div>
+                            <div className="py-3 px-4 text-text-muted italic text-[13px]">⚠️ {fileError || 'file unavailable'}</div>
                           )}
                         </>
                       )}

@@ -628,7 +628,10 @@ export function Map() {
     setSearching(true);
     try {
       const data = await search(searchQuery, 'all', 50, 'hybrid');
-      setMatchIds(new Set(data.results.map(r => r.id)));
+      setMatchIds(new Set((data.results ?? []).map(r => r.id)));
+    } catch (e) {
+      console.error('Map search failed:', e);
+      setMatchIds(new Set());
     } finally {
       setSearching(false);
     }

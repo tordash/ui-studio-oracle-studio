@@ -11,6 +11,7 @@ export function Search() {
   const [loading, setLoading] = useState(false);
   const [total, setTotal] = useState(0);
   const [searched, setSearched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const q = searchParams.get('q');
@@ -25,10 +26,15 @@ export function Search() {
 
     setLoading(true);
     setSearched(true);
+    setError(null);
     try {
       const data = await search(q, 'all', 50);
-      setResults(data.results);
-      setTotal(data.total);
+      setResults(Array.isArray(data?.results) ? data.results : []);
+      setTotal(data?.total ?? 0);
+    } catch (e) {
+      setResults([]);
+      setTotal(0);
+      setError(e instanceof Error ? e.message : 'Search failed');
     } finally {
       setLoading(false);
     }
@@ -66,7 +72,13 @@ export function Search() {
 
       {loading && <div className="text-center text-text-muted py-12">Searching...</div>}
 
-      {!loading && searched && (
+      {!loading && searched && error && (
+        <div className="text-center text-[#ef4444] text-sm py-12 bg-bg-card rounded-xl">
+          Search failed ({error}).
+        </div>
+      )}
+
+      {!loading && searched && !error && (
         <div className="mt-6">
           <p className="text-text-secondary text-sm mb-6">
             {total} results for "{searchParams.get('q')}"

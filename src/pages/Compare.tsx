@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { search } from '../api/oracle';
-import type { Document } from '../api/oracle';
+import { search, getStats } from '../api/oracle';
+import type { Document, Stats } from '../api/oracle';
 import { Spinner } from '../components/ui/Spinner';
 
 interface ModelResult {
@@ -14,11 +14,25 @@ interface ModelResult {
   error?: string;
 }
 
-const MODELS = [
-  { key: 'bge-m3', label: 'BGE-M3', desc: 'Multilingual 1024d' },
-  { key: 'nomic', label: 'Nomic', desc: 'Fast 768d' },
-  { key: 'multi', label: 'Multi', desc: 'Both models merged' },
-];
+type ModelInfo = { key: string; label: string; desc: string };
+
+/**
+ * Models come from /api/stats `vectors`: only enabled, non-retired engines
+ * (arra refuses retired ones, e.g. nomic → 410). `multi` is offered only when
+ * at least two engines are usable.
+ */
+function modelsFromStats(stats: Stats | null): ModelInfo[] {
+  const engines = (stats?.vectors ?? []).filter(v => v.enabled && !v.retired);
+  const models: ModelInfo[] = engines.map(v => ({
+    key: v.key,
+    label: v.key.toUpperCase(),
+    desc: `${v.model} · ${v.count.toLocaleString()} vectors`,
+  }));
+  if (models.length >= 2) {
+    models.push({ key: 'multi', label: 'Multi', desc: `${models.map(m => m.key).join(' + ')} merged` });
+  }
+  return models;
+}
 
 const MODES = [
   { key: 'vector', label: 'Vector' },
@@ -53,23 +67,36 @@ export function Compare() {
   );
   const [columns, setColumns] = useState<ModelResult[]>([]);
   const [searched, setSearched] = useState(false);
+  const [models, setModels] = useState<ModelInfo[] | null>(null);
+  const [modelsError, setModelsError] = useState<string | null>(null);
 
-  // Re-run search if URL has query params (e.g. navigating back)
+  // Load usable models, then re-run search if URL has query params (e.g. navigating back)
   useEffect(() => {
+    getStats()
+      .then(stats => setModels(modelsFromStats(stats)))
+      .catch(e => {
+        setModels([]);
+        setModelsError(e instanceof Error ? e.message : 'Failed to load models');
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!models || models.length === 0) return;
     const q = searchParams.get('q');
     const m = searchParams.get('mode') as 'vector' | 'hybrid' | 'fts';
     if (q && !searched) {
       doCompare(q, m || 'vector');
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [models]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function doCompare(q: string, m: 'vector' | 'hybrid' | 'fts') {
-    if (!q.trim()) return;
+    if (!q.trim() || !models || models.length === 0) return;
+    const modelList = models;
     setSearched(true);
     setSearchParams({ q, mode: m });
 
     // Initialize columns as loading
-    const initial: ModelResult[] = MODELS.map(model => ({
+    const initial: ModelResult[] = modelList.map(model => ({
       model: model.key,
       mode: m,
       results: [],
@@ -80,13 +107,13 @@ export function Compare() {
     setColumns(initial);
 
     // Fire all model searches in parallel
-    const promises = MODELS.map(async (model, i) => {
+    const promises = modelList.map(async (model, i) => {
       const start = performance.now();
       try {
         const data = await search(q, 'all', 10, m, model.key);
         const elapsed = Math.round(performance.now() - start);
         setColumns(prev => prev.map((col, j) =>
-          j === i ? { ...col, results: data.results, total: data.total, time: elapsed, loading: false } : col
+          j === i ? { ...col, results: data.results ?? [], total: data.total ?? 0, time: elapsed, loading: false } : col
         ));
       } catch (e: any) {
         setColumns(prev => prev.map((col, j) =>
@@ -145,6 +172,14 @@ export function Compare() {
         </button>
       </form>
 
+      {models && models.length === 0 && (
+        <div className="text-center text-[#ef4444] text-sm py-6 mb-6 bg-bg-card rounded-xl">
+          {modelsError
+            ? `Couldn't load models from /api/stats (${modelsError}).`
+            : 'No enabled embedding models reported by /api/stats.'}
+        </div>
+      )}
+
       {!searched && (
         <div className="text-center mt-12">
           <p className="text-text-muted text-[13px] mb-3">Try comparing:</p>
@@ -165,13 +200,13 @@ export function Compare() {
       {searched && (
         <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-2 max-md:grid-cols-1">
           {columns.map((col, colIdx) => {
-            const modelInfo = MODELS.find(m => m.key === col.model)!;
+            const modelInfo = models?.find(m => m.key === col.model) ?? { key: col.model, label: col.model, desc: '' };
             return (
               <div key={col.model} className="bg-bg-card border border-border rounded-xl overflow-hidden">
                 <div className="p-4 border-b border-border" style={{ background: 'rgba(255, 255, 255, 0.02)' }}>
                   <div className="text-lg font-semibold text-text-primary">{modelInfo.label}</div>
                   <div className="text-xs text-text-muted mt-0.5">{modelInfo.desc}</div>
-                  {!col.loading && (
+                  {!col.loading && !col.error && (
                     <div className="text-xs text-text-secondary mt-1.5">
                       {col.total.toLocaleString()} results · {col.time}ms
                     </div>

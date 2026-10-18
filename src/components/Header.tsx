@@ -2,7 +2,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { API_BASE } from '../api/oracle';
-import { apiUrl, hostLabel, isDefault, setStoredHost, clearStoredHost } from '../api/host';
+import { activeHost, apiUrl, hostLabel, isDefault, setStoredHost, clearStoredHost } from '../api/host';
 import { cached } from '../lib/cache';
 
 type NavItem = { path: string; label: string; studio?: string };
@@ -26,6 +26,30 @@ const FALLBACK_TOOLS: NavItem[] = [
   { path: '/traces', label: 'Traces' },
   { path: '/schedule', label: 'Schedule' },
 ];
+
+/**
+ * Menus hidden on our arra fork (applied to both /api/menu items and the fallback lists):
+ * - /sessions: /api/sessions exists in neither fork nor upstream
+ * - /canvas:   redirects to canvas.buildwithoracle.com, which doesn't resolve
+ * - /menu:     Menu Editor needs arra's menu admin API (/api/menu/items…), not ported yet
+ * - /pulse:    needs maw at http://<host>:3456 — only reachable when the page is on localhost
+ *              (iOS blocks http from an https page; maw listens on 127.0.0.1)
+ */
+const HIDDEN_NAV_PATHS = ['/sessions', '/canvas', '/menu'];
+const LOCAL_ONLY_NAV_PATHS = ['/pulse'];
+
+function isLocalPage(): boolean {
+  if (typeof window === 'undefined') return false;
+  const h = window.location.hostname;
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1';
+}
+
+function isNavVisible(item: NavItem): boolean {
+  const clean = item.path.split('?')[0];
+  if (HIDDEN_NAV_PATHS.includes(clean)) return false;
+  if (LOCAL_ONLY_NAV_PATHS.includes(clean) && !isLocalPage()) return false;
+  return true;
+}
 
 const MENU_CACHE_KEY = 'header:menu';
 const MENU_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -137,8 +161,8 @@ export function Header() {
     return () => { cancelled = true; };
   }, []);
 
-  const navItems = nav.main;
-  const toolsItems = nav.tools;
+  const navItems = nav.main.filter(isNavVisible);
+  const toolsItems = nav.tools.filter(isNavVisible);
   const [sessionStart] = useState(() => {
     const stored = localStorage.getItem('oracle_session_start');
     if (stored) return parseInt(stored);
@@ -168,7 +192,8 @@ export function Header() {
 
   const isActive = (path: string) => location.pathname === path.split('?')[0];
 
-  const currentHost = hostLabel().replace(' (default)', '');
+  // Host passed to cross-origin studio links as ?host= (same-origin → this page's origin).
+  const currentHost = activeHost || window.location.origin;
 
   function crossOriginHref(item: NavItem): string | null {
     if (item.studio) {
@@ -187,7 +212,7 @@ export function Header() {
         <Link to="/" className="text-lg font-bold text-accent shrink-0">
           ARRA 🔮Racle
           <span
-            className="text-[10px] font-medium text-text-muted bg-bg-card px-1.5 py-0.5 rounded ml-2 align-middle"
+            className="text-[10px] font-medium text-text-muted bg-bg-card px-1.5 py-0.5 rounded ml-2 align-middle max-sm:hidden"
             title={backendVersion ? `ui ${__APP_VERSION__} · api ${backendVersion}` : `ui ${__APP_VERSION__}`}
           >
             {__APP_VERSION__}
@@ -197,11 +222,11 @@ export function Header() {
         </Link>
 
         {/* Session stats - moved here */}
-        <div className="flex items-center gap-3 text-xs text-text-muted font-mono shrink-0">
+        <div className="flex items-center gap-3 max-sm:gap-2 text-xs text-text-muted font-mono min-w-0 ml-2">
           <button
             onClick={() => {
               const next = window.prompt(
-                'Oracle host (leave empty to use default localhost:47778):\n\nExamples:\n  localhost:47778\n  http://mba.wg:47778\n  https://oracle.example.com',
+                `Oracle host (leave empty to use the default: ${import.meta.env.DEV ? 'localhost:47778' : "this page's own origin"}):\n\nExamples:\n  localhost:47778\n  http://mba.wg:47778\n  https://oracle.example.com`,
                 isDefault ? '' : hostLabel().replace(' (default)', '')
               );
               if (next === null) return;
@@ -210,19 +235,19 @@ export function Header() {
               window.location.reload();
             }}
             title={`Click to change host. Currently: ${hostLabel()}`}
-            className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md border transition-all duration-150 ${
+            className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md border transition-all duration-150 min-w-0 max-w-[260px] max-sm:max-w-[120px] ${
               isDefault
                 ? 'border-border text-text-muted hover:bg-bg-card'
                 : 'border-accent/40 bg-accent/10 text-accent hover:bg-accent/20'
             }`}
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${isDefault ? 'bg-text-muted' : 'bg-accent animate-pulse'}`} />
-            <span>{hostLabel()}</span>
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isDefault ? 'bg-text-muted' : 'bg-accent animate-pulse'}`} />
+            <span className="truncate">{hostLabel()}</span>
           </button>
-          <span>{duration}</span>
-          <span>{stats.searches}s</span>
-          <span>{stats.learnings}l</span>
-          <span className="w-px h-3 bg-border mx-1" />
+          <span className="max-sm:hidden">{duration}</span>
+          <span className="max-sm:hidden">{stats.searches}s</span>
+          <span className="max-sm:hidden">{stats.learnings}l</span>
+          <span className="w-px h-3 bg-border mx-1 max-sm:hidden" />
           <Link to="/settings" className="p-1.5 rounded-md text-text-muted hover:text-accent hover:bg-bg-card transition-all duration-150" title="Settings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />

@@ -18,6 +18,29 @@ const ONE_HOUR = 60 * 60 * 1000;
 const ONE_DAY = 24 * ONE_HOUR;
 const TEN_MIN = 10 * 60 * 1000;
 
+/** Non-ok HTTP response from the Oracle API. Thrown (never cached) so callers can show an error state. */
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+/** Parse JSON from an ok response; throw ApiError otherwise so `cached()` never stores an error body. */
+async function okJson<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === 'string') detail = `: ${body.error}`;
+    } catch { /* non-JSON error body */ }
+    throw new ApiError(res.status, `Server error ${res.status}${detail}`);
+  }
+  return res.json();
+}
+
 /** Strip project prefix from source_file for display (vault-indexed cross-project docs) */
 export function stripProjectPrefix(sourceFile: string, project?: string): string {
   if (project && sourceFile.toLowerCase().startsWith(project.toLowerCase() + '/')) {
@@ -69,6 +92,7 @@ export interface Stats {
     collection: string;
     count: number;
     enabled: boolean;
+    retired?: boolean;  // arra fork: retired engines (e.g. nomic) are reported but refused
   }>;
 }
 
@@ -85,7 +109,7 @@ export async function search(
   const qs = params.toString();
   return cached(`search:${qs}`, TEN_MIN, async () => {
     const res = await fetch(`${API_BASE}/search?${qs}`);
-    return res.json();
+    return okJson(res);
   }, { tag: 'search' });
 }
 
@@ -95,7 +119,7 @@ export async function list(type: string = 'all', limit: number = 20, offset: num
   const qs = params.toString();
   return cached(`list:${type}:${qs}`, ONE_HOUR, async () => {
     const res = await fetch(`${API_BASE}/list?${qs}`);
-    return res.json();
+    return okJson(res);
   }, { tag: `list:${type}` });
 }
 
@@ -103,10 +127,7 @@ export async function list(type: string = 'all', limit: number = 20, offset: num
 export async function getStats(): Promise<Stats> {
   return cached('stats', ONE_HOUR, async () => {
     const res = await fetch(`${API_BASE}/stats`);
-    if (!res.ok) {
-      throw new Error(`Server error: ${res.status}`);
-    }
-    return res.json();
+    return okJson(res);
   }, { tag: 'stats' });
 }
 
@@ -157,7 +178,7 @@ export async function getFile(filePath: string, project?: string): Promise<{ con
 export async function getDoc(id: string): Promise<Document & { error?: string }> {
   return cached(`doc:${id}`, ONE_DAY, async () => {
     const res = await fetch(`${API_BASE}/doc/${encodeURIComponent(id)}`);
-    return res.json();
+    return okJson(res);
   }, { tag: 'doc' });
 }
 
@@ -167,7 +188,7 @@ export async function getSimilar(docId: string, limit: number = 5): Promise<{ re
   const qs = params.toString();
   return cached(`similar:${docId}:${limit}`, ONE_DAY, async () => {
     const res = await fetch(`${API_BASE}/similar?${qs}`);
-    return res.json();
+    return okJson(res);
   }, { tag: 'similar' });
 }
 
@@ -206,7 +227,7 @@ export async function getOracles(): Promise<{
 }> {
   return cached('oracles', ONE_DAY, async () => {
     const res = await fetch(`${API_BASE}/oracles`);
-    return res.json();
+    return okJson(res);
   }, { tag: 'oracles' });
 }
 
@@ -220,7 +241,7 @@ export async function getMap3d(model?: string): Promise<{ documents: MapDocument
   const key = `map3d:${model ?? 'default'}`;
   return cached(key, ONE_DAY, async () => {
     const res = await fetch(`${API_BASE}/map3d${params}`);
-    return res.json();
+    return okJson(res);
   }, { tag: 'map3d', store: 'idb' });
 }
 

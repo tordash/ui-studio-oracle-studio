@@ -2,7 +2,7 @@ import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useState, useEffect, useCallback } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { list, getFile, getDoc, API_BASE } from '../api/oracle';
+import { list, getFile, getDoc, API_BASE, ApiError } from '../api/oracle';
 import type { Document } from '../api/oracle';
 import { SidebarLayout } from '../components/SidebarLayout';
 import { getDocDisplayInfo } from '../utils/docDisplay';
@@ -27,6 +27,7 @@ export function DocDetail() {
   const [neighbors, setNeighbors] = useState<{ prev: Document | null; next: Document | null }>({ prev: null, next: null });
   const [showRawModal, setShowRawModal] = useState(false);
   const [rawContent, setRawContent] = useState<string | null>(null);
+  const [rawError, setRawError] = useState<string | null>(null);
 
 
   // Navigate to a document
@@ -74,6 +75,7 @@ export function DocDetail() {
 
     setFullContent(null); // Reset when doc changes
     setFileNotFound(false);
+    setRawError(null);
     loadFullContent();
   }, [doc]);
 
@@ -142,7 +144,7 @@ export function DocDetail() {
         setDoc(docData);
       }
     } catch (e) {
-      setError('Failed to load document');
+      setError(e instanceof ApiError && e.status === 404 ? 'Document not found' : 'Failed to load document');
     } finally {
       setLoading(false);
     }
@@ -152,6 +154,7 @@ export function DocDetail() {
   async function handleShowRawFile(e: React.MouseEvent) {
     e.preventDefault();
     if (!doc?.source_file) return;
+    setRawError(null);
 
     try {
       const res = await fetch(`${API_BASE}/file?path=${encodeURIComponent(doc.source_file)}${doc.project ? `&project=${encodeURIComponent(doc.project)}` : ''}`);
@@ -159,9 +162,12 @@ export function DocDetail() {
         const content = await res.text();
         setRawContent(content);
         setShowRawModal(true);
+      } else {
+        setRawError(`file unavailable (HTTP ${res.status})`);
       }
     } catch (err) {
       console.error('Failed to load raw file:', err);
+      setRawError('file unavailable (cannot reach server)');
     }
   }
 
@@ -395,6 +401,9 @@ export function DocDetail() {
                   </button>
                 ) : (
                   <span className="text-xs text-text-muted font-mono opacity-70">📁 {info.displayPath}</span>
+                )}
+                {rawError && (
+                  <span className="text-xs text-[#f59e0b]">⚠️ {rawError}</span>
                 )}
               </>
             );

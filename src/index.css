@@ -36,6 +36,12 @@
   --accent-hover: #42a5f5;
   --success: #4ade80;
   --warning: #fbbf24;
+  /* Dark UA widgets: page scrollbar, iOS scroll indicators, form controls */
+  color-scheme: dark;
+}
+
+html {
+  background: var(--bg-primary);
 }
 
 body {
@@ -62,6 +68,10 @@ a {
 }
 
 ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-corner {
   background: transparent;
 }
 
