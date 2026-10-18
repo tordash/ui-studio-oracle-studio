@@ -37,11 +37,11 @@ export class ScreenGrid {
   readonly cell: number;
   private cols = 0;
   private rows = 0;
-  private cellStart = new Int32Array(1);
-  private items = new Int32Array(0);
-  private xs = new Float32Array(0);
-  private ys = new Float32Array(0);
-  private depth = new Float32Array(0);
+  private cellStart: Int32Array = new Int32Array(1);
+  private items: Int32Array = new Int32Array(0);
+  private xs: Float32Array = new Float32Array(0);
+  private ys: Float32Array = new Float32Array(0);
+  private depth: Float32Array = new Float32Array(0);
 
   constructor(cell = 32) {
     this.cell = cell;
