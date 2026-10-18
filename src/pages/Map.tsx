@@ -1,938 +1,444 @@
-import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import * as THREE from 'three';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { getMap, getMap3d, getStats, getOracles, search } from '../api/oracle';
-import type { MapDocument, Stats, OracleProject } from '../api/oracle';
+// Knowledge Galaxy (Map page) — one star per file from /api/map3d.
+// Spec: SomTor-oracle ψ/lab/studio-a2/3D-PLAN.md §1 · issue tordash/ui-studio-oracle-studio#1
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { getMap, getMap3d, getStats, search } from '../api/oracle';
+import type { MapDocument, Stats } from '../api/oracle';
+import {
+  computeStates, formatDay, galaxyTypeColor, matchLocal, matchSearchResults, prepareGalaxy,
+} from '../lib/galaxy/mapping';
+import { buildClusters } from '../lib/galaxy/clusters';
+import { GalaxyView } from '../components/galaxy/GalaxyView';
+import { GalaxyFallback } from '../components/galaxy/GalaxyFallback';
+import { DocSheet } from '../components/galaxy/DocSheet';
+import { GALAXY_FONT_STACK, webglAvailable } from '../components/galaxy/engine';
+import type { GalaxyEngine } from '../components/galaxy/engine';
 
-const TYPE_COLORS: Record<string, string> = {
-  principle: '#60a5fa',
-  learning: '#a78bfa',
-  retro: '#fbbf24',
-  unknown: '#666666',
-};
+const DEFAULT_ENGINE = 'bge-m3';
+const SEARCH_LIMIT = 100;
 
-const TYPE_COLORS_NUM: Record<string, number> = {
-  principle: 0x60a5fa,
-  learning: 0xa78bfa,
-  retro: 0xfbbf24,
-  unknown: 0x666666,
-};
+interface PcaInfo { variance_explained?: number[]; n_vectors?: number; computed_at?: string }
 
-// Globe colors — unique tint per engine
-const GLOBE_COLORS: Record<string, number> = {
-  'bge-m3': 0x6a5acd,   // slate indigo (original)
-  'nomic': 0x2dd4bf,     // teal
-  'qwen3': 0xfb923c,     // orange
-};
-
-// Positions for globes (first is center/origin, rest spread out)
-const GLOBE_POSITIONS: THREE.Vector3[] = [
-  new THREE.Vector3(0, 0, 0),        // center (default)
-  new THREE.Vector3(-22, 14, 0),     // top left
-  new THREE.Vector3(22, 14, 0),      // top right
-  new THREE.Vector3(0, -18, 0),      // bottom center
-];
-
-// Damped spring tween
-function cdsTween(state: { x: number; v: number }, target: number, speed: number, dt: number) {
-  const n1 = state.v - (state.x - target) * (speed * speed * dt);
-  const n2 = 1 + speed * dt;
-  const nv = n1 / (n2 * n2);
-  return { x: state.x + nv * dt, v: nv };
+function subscribeReducedMotion(cb: () => void) {
+  const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+  mq.addEventListener('change', cb);
+  return () => mq.removeEventListener('change', cb);
 }
+const getReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-function xxhash(seed: number, data: number): number {
-  let h = ((seed + 374761393) >>> 0);
-  h = ((h + (data * 3266489917 >>> 0)) >>> 0);
-  h = ((((h << 17) | (h >>> 15)) * 668265263) >>> 0);
-  h ^= h >>> 15;
-  h = ((h * 2246822519) >>> 0);
-  h ^= h >>> 13;
-  h = ((h * 3266489917) >>> 0);
-  h ^= h >>> 16;
-  return (h >>> 0) / 4294967296;
-}
-
-function noise1D(p: number, seed: number): number {
-  const i = Math.floor(p);
-  const f = p - i;
-  const u = f * f * (3 - 2 * f);
-  const g0 = xxhash(seed, i) * 2 - 1;
-  const g1 = xxhash(seed, i + 1) * 2 - 1;
-  return g0 * (1 - u) + g1 * u;
-}
-
-function fractalNoise(p: number, octaves: number, seed: number): number {
-  let f = 0, w = 1, max = 0;
-  for (let i = 0; i < octaves; i++) {
-    f += w * noise1D(p, seed + i);
-    max += w;
-    p *= 2;
-    w *= 0.5;
-  }
-  return f / max;
-}
-
-function ageScale(createdAt: string | null): number {
-  if (!createdAt) return 0.7;
-  const ageMs = Date.now() - new Date(createdAt).getTime();
-  const ageDays = ageMs / (1000 * 60 * 60 * 24);
-  if (ageDays < 7) return 1.3;
-  if (ageDays < 30) return 1.0;
-  return 0.7;
-}
-
-interface GlobeData {
-  key: string;
-  model: string;
-  count: number;
-  documents: MapDocument[];
-  center: THREE.Vector3;
-}
+const glass = { background: 'rgba(9, 10, 22, 0.66)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' } as const;
 
 export function Map() {
-  const navigate = useNavigate();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [globes, setGlobes] = useState<GlobeData[]>([]);
+  const reducedMotion = useSyncExternalStore(subscribeReducedMotion, getReducedMotion, () => false);
+  const [webgl] = useState(() => webglAvailable());
+  const [contextLost, setContextLost] = useState(false);
+
+  const [engineKey, setEngineKey] = useState(DEFAULT_ENGINE);
+  const [docs, setDocs] = useState<MapDocument[] | null>(null);
+  const [pca, setPca] = useState<PcaInfo | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [oracleProjects, setOracleProjects] = useState<OracleProject[]>([]);
-  const [totalOracles, setTotalOracles] = useState(0);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [matchIds, setMatchIds] = useState<Set<string>>(new Set());
-  const [hoveredDoc, setHoveredDoc] = useState<MapDocument | null>(null);
+  const [switching, setSwitching] = useState(false);
+
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set());
+  const [project, setProject] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [matches, setMatches] = useState<Set<number> | null>(null);
   const [searching, setSearching] = useState(false);
-  const [visibleTypes, setVisibleTypes] = useState<Set<string>>(new Set(['principle', 'learning', 'retro']));
-  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [searchNote, setSearchNote] = useState<string | null>(null);
 
-  const visibleTypesRef = useRef<Set<string>>(new Set(['principle', 'learning', 'retro']));
-  const selectedProjectRef = useRef<string | null>(null);
-  const matchIdsRef = useRef<Set<string>>(new Set());
-  const hoveredDocRef = useRef<MapDocument | null>(null);
-  const animRef = useRef<number>(0);
-  const meshesRef = useRef<THREE.Mesh[]>([]);
-  const sceneRef = useRef<THREE.Scene | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const mouseNDC = useRef(new THREE.Vector2(10, 10));
-  const labelsRef = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState<{ idx: number; touch: boolean }>({ idx: -1, touch: false });
+  const [selected, setSelected] = useState(-1);
 
-  // Camera orbit state
-  const camAngleX = useRef({ x: 0, v: 0 });
-  const camAngleY = useRef({ x: 0.3, v: 0 });
-  const camDist = useRef({ x: 28, v: 0 });
-  const targetAngleX = useRef(0);
-  const targetAngleY = useRef(0.3);
-  const targetDist = useRef(28);
-  const camTarget = useRef(new THREE.Vector3(0, 0, 0));
-  const targetCenter = useRef(new THREE.Vector3(0, 0, 0));
-  const isDragging = useRef(false);
-  const dragStart = useRef({ x: 0, y: 0 });
+  const engineRef = useRef<GalaxyEngine | null>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const searchSeq = useRef(0);
 
-  useEffect(() => { matchIdsRef.current = matchIds; }, [matchIds]);
-  useEffect(() => { hoveredDocRef.current = hoveredDoc; }, [hoveredDoc]);
-  useEffect(() => { visibleTypesRef.current = visibleTypes; }, [visibleTypes]);
-  useEffect(() => { selectedProjectRef.current = selectedProject; }, [selectedProject]);
-
-  const [loadingModel, setLoadingModel] = useState<string | null>(null);
-
-  // Load data — bge-m3 as initial globe
+  // ── data ──
   useEffect(() => {
-    Promise.all([
-      getMap3d('bge-m3').catch(() => getMap().then(d => ({ ...d, pca_info: undefined }))).catch(() => ({ documents: [], total: 0 })),
-      getStats().catch(() => null),
-      getOracles().catch(() => ({ projects: [], total_projects: 0, identities: [], total_identities: 0 })),
-    ]).then(([mapData, statsData, oraclesData]) => {
-      setStats(statsData);
-      setOracleProjects(oraclesData.projects);
-      setTotalOracles(oraclesData.total_projects);
-      setGlobes([{
-        key: 'bge-m3',
-        model: 'BAAI/bge-m3',
-        count: mapData.documents.length,
-        documents: mapData.documents,
-        center: new THREE.Vector3(0, 0, 0),
-      }]);
-      setLoading(false);
-    }).catch(e => {
-      setError(e.message);
-      setLoading(false);
-    });
+    let cancelled = false;
+    getMap3d(engineKey)
+      .catch(() => getMap().then(d => ({ ...d, pca_info: undefined })))
+      .then(d => {
+        if (cancelled) return;
+        setDocs(d.documents ?? []);
+        setPca((d.pca_info as PcaInfo | undefined) ?? null);
+        setError(null);
+      })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!cancelled) setSwitching(false); });
+    return () => { cancelled = true; };
+  }, [engineKey]);
+
+  useEffect(() => {
+    getStats().then(setStats).catch(() => setStats(null));
   }, []);
 
-  // Add a new globe for a specific engine
-  async function addGlobe(key: string, model: string) {
-    if (globes.some(g => g.key === key) || loadingModel) return;
-    setLoadingModel(key);
-    try {
-      const data = await getMap3d(key);
-      if (data.documents.length === 0) return;
-      // Position: use next available slot in triangle
-      const idx = globes.length;
-      const center = GLOBE_POSITIONS[idx % GLOBE_POSITIONS.length].clone();
-      setGlobes(prev => [...prev, {
-        key,
-        model,
-        count: data.documents.length,
-        documents: data.documents,
-        center,
-      }]);
-      // Zoom out to see all globes
-      targetDist.current = 55;
-    } catch (e: any) {
-      console.error('Failed to load globe:', e);
-    } finally {
-      setLoadingModel(null);
-    }
-  }
+  const data = useMemo(() => (docs ? prepareGalaxy(docs) : null), [docs]);
+  const clusters = useMemo(() => (data ? buildClusters(data.docs, data.positions) : []), [data]);
+  const states = useMemo(
+    () => (data ? computeStates(data, { hiddenTypes, matches, project }) : new Float32Array(0)),
+    [data, hiddenTypes, matches, project],
+  );
+  const projects = useMemo(() => {
+    if (!data) return [] as [string, number][];
+    const m: Record<string, number> = {};
+    for (const d of data.docs) { const k = d.project ?? ''; m[k] = (m[k] || 0) + 1; }
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  }, [data]);
 
-  // Three.js scene setup — multi-globe
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || globes.length === 0) return;
+  // ── engine callbacks ──
+  const onHover = useCallback((idx: number, touch: boolean) => setHover({ idx, touch }), []);
+  const onHoverAnchor = useCallback((x: number, y: number, visible: boolean) => {
+    const el = tooltipRef.current;
+    if (!el) return;
+    const parent = el.parentElement;
+    const pw = parent?.clientWidth ?? 0;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    const left = Math.max(12, Math.min(pw - w - 12, x - w / 2));
+    const above = y - h - 22;
+    const top = above < 64 ? y + 24 : above;
+    el.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
+    el.style.opacity = visible ? '1' : '0';
+  }, []);
+  const onOpen = useCallback((idx: number) => { setSelected(idx); setHover({ idx: -1, touch: false }); }, []);
+  const onContextLost = useCallback(() => setContextLost(true), []);
 
-    const width = container.clientWidth;
-    const height = container.clientHeight;
+  // after the tooltip re-renders with new content (new size), re-anchor it to the star
+  useLayoutEffect(() => {
+    if (hover.idx >= 0) engineRef.current?.refreshHoverAnchor();
+  }, [hover.idx]);
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x020208);
-    sceneRef.current = scene;
-
-    const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 2000);
-    camera.position.z = 28;
-    cameraRef.current = camera;
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
-    container.appendChild(renderer.domElement);
-    rendererRef.current = renderer;
-
-    const composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, camera));
-    const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(width, height),
-      0.8,   // strength
-      0.4,   // radius
-      0.2,   // threshold
-    );
-    composer.addPass(bloomPass);
-
-    const ambient = new THREE.AmbientLight(0x404060, 0.4);
-    scene.add(ambient);
-    const directional = new THREE.DirectionalLight(0xffffff, 0.6);
-    directional.position.set(5, 5, 5);
-    scene.add(directional);
-
-    // Star field
-    const starCount = 4000;
-    const starGeo = new THREE.BufferGeometry();
-    const starPositions = new Float32Array(starCount * 3);
-    for (let si = 0; si < starCount; si++) {
-      starPositions[si * 3] = (Math.random() - 0.5) * 800;
-      starPositions[si * 3 + 1] = (Math.random() - 0.5) * 800;
-      starPositions[si * 3 + 2] = (Math.random() - 0.5) * 800;
-    }
-    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-    const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.04, transparent: true, opacity: 0.6 });
-    const stars = new THREE.Points(starGeo, starMat);
-    scene.add(stars);
-
-    // Shared geometry
-    const nodeGeometry = new THREE.SphereGeometry(0.05, 10, 10);
-    const meshes: THREE.Mesh[] = [];
-    const globeMeshes: THREE.LineSegments[] = [];
-    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-    // Create globes and their document clouds
-    globes.forEach((globe) => {
-      const globeColor = GLOBE_COLORS[globe.key] || 0x6a5acd;
-      const globeRadius = 8;
-      const globeGeometry = new THREE.SphereGeometry(globeRadius, 32, 24);
-      const globeWireframe = new THREE.WireframeGeometry(globeGeometry);
-      const globeMaterial = new THREE.LineBasicMaterial({
-        color: globeColor,
-        opacity: 0.08,
-        transparent: true,
-      });
-      const globeMesh = new THREE.LineSegments(globeWireframe, globeMaterial);
-      globeMesh.position.copy(globe.center);
-      scene.add(globeMesh);
-      globeMeshes.push(globeMesh);
-
-      // Connection lines between globes (subtle)
-      if (globes.length > 1) {
-        globes.forEach((other) => {
-          if (other.key <= globe.key) return; // avoid duplicates
-          const lineGeo = new THREE.BufferGeometry().setFromPoints([
-            globe.center, other.center,
-          ]);
-          const lineMat = new THREE.LineBasicMaterial({
-            color: 0x333355,
-            opacity: 0.15,
-            transparent: true,
-          });
-          scene.add(new THREE.Line(lineGeo, lineMat));
-        });
-      }
-
-      // Nodes for this globe
-      globe.documents.forEach((doc, i) => {
-        const color = TYPE_COLORS_NUM[doc.type] || TYPE_COLORS_NUM.unknown;
-        const baseScale = ageScale(doc.created_at);
-        const material = new THREE.MeshStandardMaterial({
-          color,
-          metalness: 0.3,
-          roughness: 0.2,
-          emissive: color,
-          emissiveIntensity: 0.8,
-          transparent: true,
-          opacity: 1.0,
-        });
-
-        const mesh = new THREE.Mesh(nodeGeometry, material);
-        const z = doc.z != null ? doc.z : (xxhash(7, i) - 0.5) * 2;
-        const basePos = new THREE.Vector3(
-          globe.center.x + doc.x * 8,
-          globe.center.y + doc.y * 8,
-          globe.center.z + z * 8,
-        );
-        mesh.position.copy(basePos);
-        mesh.userData = { doc, basePos, baseScale, globeKey: globe.key };
-        scene.add(mesh);
-        meshes.push(mesh);
-      });
-    });
-    meshesRef.current = meshes;
-
-    // Raycaster
-    const raycaster = new THREE.Raycaster();
-    const mouse = new THREE.Vector2(10, 10);
-
-    function onMouseDown(e: MouseEvent) {
-      isDragging.current = true;
-      dragStart.current = { x: e.clientX, y: e.clientY };
-    }
-
-    function onMouseUp(e: MouseEvent) {
-      const dx = e.clientX - dragStart.current.x;
-      const dy = e.clientY - dragStart.current.y;
-      const wasDrag = Math.abs(dx) > 3 || Math.abs(dy) > 3;
-
-      if (!wasDrag) {
-        const rect = container!.getBoundingClientRect();
-        mouse.x = ((e.clientX - rect.left) / width) * 2 - 1;
-        mouse.y = -((e.clientY - rect.top) / height) * 2 + 1;
-        raycaster.setFromCamera(mouse, camera);
-        const intersects = raycaster.intersectObjects(meshes);
-        if (intersects.length > 0) {
-          const doc = intersects[0].object.userData.doc as MapDocument;
-          navigate(`/doc/${encodeURIComponent(doc.id)}`);
-        }
-      }
-      isDragging.current = false;
-    }
-
-    function onMouseMove(e: MouseEvent) {
-      const rect = container!.getBoundingClientRect();
-      mouseNDC.current.x = ((e.clientX - rect.left) / width) * 2 - 1;
-      mouseNDC.current.y = -((e.clientY - rect.top) / height) * 2 + 1;
-
-      if (isDragging.current) {
-        const dx = e.clientX - dragStart.current.x;
-        const dy = e.clientY - dragStart.current.y;
-        targetAngleX.current = camAngleX.current.x + dx * 0.005;
-        targetAngleY.current = Math.max(-1.2, Math.min(1.2, camAngleY.current.x - dy * 0.005));
-        return;
-      }
-
-      mouse.x = mouseNDC.current.x;
-      mouse.y = mouseNDC.current.y;
-      raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObjects(meshes);
-
-      if (intersects.length > 0) {
-        const doc = intersects[0].object.userData.doc as MapDocument;
-        setHoveredDoc(doc);
-        container!.style.cursor = 'pointer';
-      } else {
-        setHoveredDoc(null);
-        container!.style.cursor = isDragging.current ? 'grabbing' : 'grab';
-      }
-    }
-
-    function onWheel(e: WheelEvent) {
-      e.preventDefault();
-      const delta = e.deltaY > 0 ? 1.08 : 0.92;
-      targetDist.current = Math.max(3, Math.min(500, targetDist.current * delta));
-    }
-
-    function onMouseLeave() {
-      isDragging.current = false;
-      setHoveredDoc(null);
-      mouseNDC.current.set(10, 10);
-    }
-
-    container.addEventListener('mousedown', onMouseDown);
-    container.addEventListener('mouseup', onMouseUp);
-    container.addEventListener('mousemove', onMouseMove);
-    container.addEventListener('wheel', onWheel, { passive: false });
-    container.addEventListener('mouseleave', onMouseLeave);
-
-    function onResize() {
-      const w = container!.clientWidth;
-      const h = container!.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-      composer.setSize(w, h);
-    }
-    window.addEventListener('resize', onResize);
-
-    // Proximity label pool
-    const LABEL_POOL_SIZE = 8;
-    const labelPool: HTMLDivElement[] = [];
-    const labelsContainer = labelsRef.current;
-    if (labelsContainer) {
-      for (let i = 0; i < LABEL_POOL_SIZE; i++) {
-        const el = document.createElement('div');
-        el.className = 'proximity-label';
-        el.style.display = 'none';
-        labelsContainer.appendChild(el);
-        labelPool.push(el);
-      }
-    }
-
-    // Globe label overlays (HTML)
-    const globeLabelEls: HTMLDivElement[] = [];
-    if (labelsContainer) {
-      globes.forEach((globe) => {
-        const el = document.createElement('div');
-        el.style.cssText = 'position:absolute;font-size:11px;font-family:monospace;color:rgba(255,255,255,0.5);pointer-events:none;text-transform:uppercase;letter-spacing:2px;white-space:nowrap;';
-        el.textContent = `${globe.key} · ${globe.documents.length.toLocaleString()}`;
-        labelsContainer.appendChild(el);
-        globeLabelEls.push(el);
-      });
-    }
-
-    // FPS counter
-    let fpsFrames = 0;
-    let fpsLastTime = performance.now();
-    const fpsEl = document.createElement('div');
-    fpsEl.className = 'proximity-label';
-    fpsEl.style.cssText = 'position:absolute;top:8px;right:8px;font-size:11px;font-mono;color:#888;z-index:10;';
-    container.appendChild(fpsEl);
-
-    // Animation loop
-    let time = 0;
-    const dt = 1 / 60;
-    const tempVec = new THREE.Vector3();
-    const aspectRatio = width / height;
-
-    function animate() {
-      time += 0.016;
-
-      fpsFrames++;
-      const now = performance.now();
-      if (now - fpsLastTime >= 1000) {
-        fpsEl.textContent = `${fpsFrames} fps`;
-        fpsFrames = 0;
-        fpsLastTime = now;
-      }
-
-      if (!isDragging.current && !prefersReduced) {
-        targetAngleX.current += 0.0003;
-      }
-
-      camAngleX.current = cdsTween(camAngleX.current, targetAngleX.current, 3, dt);
-      camAngleY.current = cdsTween(camAngleY.current, targetAngleY.current, 3, dt);
-      camDist.current = cdsTween(camDist.current, targetDist.current, 4, dt);
-
-      const dist = camDist.current.x;
-
-      // Scale bloom + emissive by distance (prevents glow wash at zoom-out)
-      const bloomScale = Math.max(0.05, Math.min(1.0, 15 / dist));
-      bloomPass.strength = 0.6 * bloomScale;
-      bloomPass.radius = 0.4 * bloomScale;
-
-      camera.position.x = Math.sin(camAngleX.current.x) * Math.cos(camAngleY.current.x) * dist;
-      camera.position.y = Math.sin(camAngleY.current.x) * dist;
-      camera.position.z = Math.cos(camAngleX.current.x) * Math.cos(camAngleY.current.x) * dist;
-
-      camTarget.current.lerp(targetCenter.current, 0.05);
-      const ct = camTarget.current;
-      camera.position.x += ct.x;
-      camera.position.y += ct.y;
-      camera.position.z += ct.z;
-      camera.lookAt(ct.x, ct.y, ct.z);
-
-      // Rotate each globe
-      globeMeshes.forEach((gm, gi) => {
-        gm.rotation.y = time * 0.02 + gi * 0.7;
-        gm.rotation.x = time * 0.005 + gi * 0.3;
-      });
-
-      // Update globe labels position
-      globes.forEach((globe, gi) => {
-        if (gi < globeLabelEls.length) {
-          tempVec.copy(globe.center);
-          tempVec.y -= 10.5; // below globe
-          tempVec.project(camera);
-          if (tempVec.z < 1) {
-            const px = (tempVec.x + 1) * 0.5 * width;
-            const py = (1 - (tempVec.y + 1) * 0.5) * height;
-            globeLabelEls[gi].style.left = `${px}px`;
-            globeLabelEls[gi].style.top = `${py}px`;
-            globeLabelEls[gi].style.transform = 'translate(-50%, 0)';
-            globeLabelEls[gi].style.display = '';
-          } else {
-            globeLabelEls[gi].style.display = 'none';
-          }
-        }
-      });
-
-      // Update nodes
-      const matches = matchIdsRef.current;
-      const hasSearch = matches.size > 0;
-      const hovered = hoveredDocRef.current;
-      const visTypes = visibleTypesRef.current;
-      const projFilter = selectedProjectRef.current;
-      const mx = mouseNDC.current.x;
-      const my = mouseNDC.current.y;
-
-      const nearby: { screenDist: number; ndcX: number; ndcY: number; doc: MapDocument; color: string }[] = [];
-
-      meshes.forEach((mesh, i) => {
-        const doc = mesh.userData.doc as MapDocument;
-        const basePos = mesh.userData.basePos as THREE.Vector3;
-        const baseScale = mesh.userData.baseScale as number;
-        const mat = mesh.material as THREE.MeshStandardMaterial;
-        const isHidden = !visTypes.has(doc.type);
-        const isMatched = hasSearch && (matches.has(doc.id) || (doc.chunk_ids?.some(cid => matches.has(cid)) ?? false));
-        const isProjectFiltered = projFilter != null && doc.project !== projFilter && doc.project != null;
-        const isFaded = (hasSearch && !isMatched) || isProjectFiltered;
-
-        mesh.visible = !isHidden;
-        if (isHidden) return;
-
-        if (!prefersReduced) {
-          const t = time * 0.15;
-          const dx = fractalNoise(t + i * 0.17, 2, 42) * 0.12;
-          const dy = fractalNoise(t + i * 0.23, 2, 97) * 0.12;
-          const dz = fractalNoise(t + i * 0.31, 2, 163) * 0.06;
-          mesh.position.set(basePos.x + dx, basePos.y + dy, basePos.z + dz);
-        }
-
-        tempVec.copy(mesh.position).project(camera);
-        const screenDist = Math.sqrt(
-          Math.pow((tempVec.x - mx) * aspectRatio, 2) +
-          Math.pow(tempVec.y - my, 2)
-        );
-        const magnifyRadius = 0.5;
-        const magnifyFactor = screenDist < magnifyRadius
-          ? 1 + 0.6 * Math.pow(1 - screenDist / magnifyRadius, 2)
-          : 1;
-
-        let scale = baseScale * magnifyFactor;
-        if (isMatched) scale *= 1.4;
-        mesh.scale.setScalar(scale);
-
-        const emissiveScale = Math.max(0.2, Math.min(1.0, 20 / dist));
-        const baseGlow = isFaded ? 0.1 : 0.5 * emissiveScale;
-        mat.emissiveIntensity = baseGlow + (magnifyFactor - 1) * 0.6;
-        if (isMatched) mat.emissiveIntensity = 1.0 * emissiveScale;
-        if (hovered?.id === doc.id) mat.emissiveIntensity = 1.2;
-
-        mat.opacity = isFaded ? 0.05 : 1.0;
-
-        if (!isFaded && screenDist < 0.5 && tempVec.z < 1) {
-          nearby.push({
-            screenDist,
-            ndcX: tempVec.x,
-            ndcY: tempVec.y,
-            doc,
-            color: TYPE_COLORS[doc.type] || TYPE_COLORS.unknown,
-          });
-        }
-      });
-
-      nearby.sort((a, b) => a.screenDist - b.screenDist);
-      for (let li = 0; li < labelPool.length; li++) {
-        const el = labelPool[li];
-        if (li < nearby.length) {
-          const n = nearby[li];
-          const px = (n.ndcX + 1) * 0.5 * width;
-          const py = (1 - (n.ndcY + 1) * 0.5) * height;
-          const opacity = Math.max(0.3, 1 - n.screenDist / 0.5);
-          el.textContent = extractTitle(n.doc.source_file);
-          el.style.left = `${px + 10}px`;
-          el.style.top = `${py - 8}px`;
-          el.style.opacity = String(opacity);
-          el.style.color = n.color;
-          el.style.display = '';
-        } else {
-          el.style.display = 'none';
-        }
-      }
-
-      composer.render();
-      animRef.current = requestAnimationFrame(animate);
-    }
-
-    animate();
-
-    return () => {
-      cancelAnimationFrame(animRef.current);
-      fpsEl.remove();
-      labelPool.forEach(el => el.remove());
-      globeLabelEls.forEach(el => el.remove());
-      container.removeEventListener('mousedown', onMouseDown);
-      container.removeEventListener('mouseup', onMouseUp);
-      container.removeEventListener('mousemove', onMouseMove);
-      container.removeEventListener('wheel', onWheel);
-      container.removeEventListener('mouseleave', onMouseLeave);
-      window.removeEventListener('resize', onResize);
-
-      meshes.forEach((mesh) => {
-        (mesh.material as THREE.Material).dispose();
-        scene.remove(mesh);
-      });
-      nodeGeometry.dispose();
-      // Dispose globe geometries
-      scene.traverse((obj) => {
-        if ((obj as any).geometry) (obj as any).geometry.dispose();
-        if ((obj as any).material) (obj as any).material.dispose();
-      });
-      composer.dispose();
-
-      if (container.contains(renderer.domElement)) {
-        container.removeChild(renderer.domElement);
-      }
-      renderer.dispose();
-    };
-  }, [globes, navigate]);
-
-  // Search
-  async function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
-    if (!searchQuery.trim()) {
-      setMatchIds(new Set());
-      return;
-    }
+  // ── search ──
+  async function runSearch(e?: React.FormEvent) {
+    e?.preventDefault();
+    const q = query.trim();
+    if (!data) return;
+    if (!q) { clearSearch(); return; }
+    const seq = ++searchSeq.current;
+    const local = matchLocal(data, q);
+    setMatches(local);
+    setSearchNote(null);
     setSearching(true);
     try {
-      const data = await search(searchQuery, 'all', 50, 'hybrid');
-      setMatchIds(new Set((data.results ?? []).map(r => r.id)));
-    } catch (e) {
-      console.error('Map search failed:', e);
-      setMatchIds(new Set());
+      const res = await search(q, 'all', SEARCH_LIMIT, 'hybrid');
+      if (seq !== searchSeq.current) return;
+      const api = matchSearchResults(data, res.results ?? []);
+      const union = new Set([...local, ...api]);
+      setMatches(union);
+      setSearchNote(`${api.size} semantic · ${local.size} title/path/concept`);
+      if (union.size > 0) engineRef.current?.frame(union);
+    } catch {
+      if (seq !== searchSeq.current) return;
+      setSearchNote(`${local.size} title/path/concept · semantic search unavailable`);
+      if (local.size > 0) engineRef.current?.frame(local);
     } finally {
-      setSearching(false);
+      if (seq === searchSeq.current) setSearching(false);
     }
   }
 
-  // Fly to a specific globe
-  function flyToGlobe(index: number) {
-    if (index < globes.length) {
-      const center = globes[index].center;
-      targetCenter.current.set(center.x, center.y, center.z);
-      targetDist.current = 18;
-    }
+  function clearSearch() {
+    searchSeq.current++;
+    setQuery('');
+    setMatches(null);
+    setSearchNote(null);
+    setSearching(false);
+    engineRef.current?.goHome();
   }
 
-  // Total documents across all globes
-  const totalDocs = globes.reduce((sum, g) => sum + g.documents.length, 0);
+  function toggleType(t: string) {
+    setHiddenTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t); else next.add(t);
+      return next;
+    });
+  }
 
-  // Type counts across all globes
-  const typeCounts = globes.reduce((acc, g) => {
-    g.documents.forEach(d => { acc[d.type] = (acc[d.type] || 0) + 1; });
-    return acc;
-  }, {} as Record<string, number>);
+  function switchEngine(key: string) {
+    if (key === engineKey || switching) return;
+    setSwitching(true);
+    setSelected(-1);
+    setMatches(null);
+    setEngineKey(key);
+  }
 
-  if (loading) {
+  // ── states ──
+  if (error && !data) {
     return (
-      <div className="flex flex-col items-center justify-center h-[calc(100vh-64px)] gap-3">
-        <div className="text-lg text-text-primary">Loading knowledge map...</div>
-        <div className="text-[13px] text-text-muted">Fetching embeddings from all engines...</div>
+      <div className="flex flex-col items-center justify-center h-[calc(100dvh-64px)] gap-3 px-6 text-center" style={{ background: '#05060f' }}>
+        <div className="text-base text-[#f87171]">Couldn’t load the galaxy</div>
+        <div className="text-[13px] text-text-muted max-w-[420px]">{error}</div>
       </div>
     );
   }
 
-  if (error) {
+  if (!data) {
     return (
-      <div className="flex flex-col items-center justify-center h-[calc(100vh-64px)] gap-3">
-        <div className="text-base text-[#ef4444]">Failed to load map: {error}</div>
+      <div className="relative flex flex-col items-center justify-center h-[calc(100dvh-64px)] gap-3 overflow-hidden" style={{ background: SPACE_BG }}>
+        <div className="w-10 h-10 rounded-full border border-white/10 border-t-[#8ab4ff] motion-safe:animate-spin" />
+        <div className="text-[15px] text-text-primary tracking-wide">Charting the galaxy…</div>
+        <div className="text-[12px] text-text-muted">Projecting embeddings from {engineKey}</div>
       </div>
     );
   }
+
+  const types = Object.entries(data.typeCounts).sort((a, b) => b[1] - a[1]);
+  const engines = (stats?.vectors ?? []).filter(v => v.enabled && !v.retired);
+  const useFallback = !webgl || contextLost;
+  const hovered = hover.idx >= 0 && hover.idx < data.count ? hover.idx : -1;
+  const variance = pca?.variance_explained?.map(v => Math.round(v * 100));
 
   return (
-    <div className="flex h-[calc(100vh-64px)] overflow-hidden">
-      <div className="flex-1 relative overflow-hidden">
-        <form onSubmit={handleSearch} className="absolute top-4 left-1/2 -translate-x-1/2 flex gap-2 z-10 items-center">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search to highlight region..."
-            className="w-[300px] px-4 py-2.5 rounded-[10px] text-sm text-text-primary border border-white/[0.08] outline-none backdrop-blur-xl transition-colors duration-200 focus:border-accent placeholder:text-text-muted [&::-webkit-search-cancel-button]:hidden [&::-webkit-clear-button]:hidden [&::-ms-clear]:hidden"
-            style={{ background: 'rgba(10, 10, 20, 0.7)', WebkitAppearance: 'none' }}
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => { setSearchQuery(''); setMatchIds(new Set()); }}
-              className="px-3.5 py-2 rounded-[10px] text-xs text-text-secondary cursor-pointer border border-white/[0.08] backdrop-blur-xl transition-all duration-200 hover:border-accent hover:text-accent"
-              style={{ background: 'rgba(10, 10, 20, 0.7)' }}
-            >
-              Clear
-            </button>
-          )}
-          {searching && <span className="w-2 h-2 rounded-full bg-accent animate-search-pulse" />}
-        </form>
-
-        <div ref={containerRef} className="w-full h-full cursor-grab active:cursor-grabbing" style={{ background: '#05050a' }} />
-        <div ref={labelsRef} className="absolute inset-0 pointer-events-none z-[5] overflow-hidden" />
-
-        {totalDocs === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center z-[5] gap-3" style={{ background: 'rgba(5, 5, 10, 0.9)' }}>
-            <div className="text-[22px] font-bold text-text-primary">No Embeddings Yet</div>
-            <div className="text-sm text-text-muted text-center leading-relaxed">
-              The 3D map requires vector embeddings from LanceDB.<br />
-              Run a vector index to populate the map.
-            </div>
+    <div className="flex h-[calc(100dvh-64px)] overflow-hidden" style={{ background: SPACE_BG }}>
+      <div className="flex-1 relative overflow-hidden min-w-0">
+        {data.count === 0 ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+            <div className="text-[22px] font-semibold text-text-primary">No stars yet</div>
+            <div className="text-sm text-text-muted leading-relaxed">The galaxy needs vector embeddings. Run a vector index to populate it.</div>
           </div>
+        ) : useFallback ? (
+          <GalaxyFallback data={data} clusters={clusters} reason={webgl ? 'context-lost' : 'no-webgl'} matches={matches} onOpen={setSelected} />
+        ) : (
+          <GalaxyView
+            className="absolute inset-0"
+            data={data}
+            clusters={clusters}
+            states={states}
+            selected={selected}
+            reducedMotion={reducedMotion}
+            engineRef={engineRef}
+            onHover={onHover}
+            onHoverAnchor={onHoverAnchor}
+            onOpen={onOpen}
+            onContextLost={onContextLost}
+          />
         )}
 
-        {hoveredDoc && (
+        {/* tooltip — positioned imperatively by the engine (no React render per frame) */}
+        {!useFallback && (
           <div
-            className="fixed bottom-6 left-1/2 -translate-x-1/2 rounded-[10px] px-5 py-3 z-20 pointer-events-none backdrop-blur-xl border border-white/[0.08] text-center"
-            style={{ background: 'rgba(10, 10, 20, 0.75)' }}
+            ref={tooltipRef}
+            role="status"
+            aria-live="polite"
+            className="galaxy-tooltip pointer-events-none absolute left-0 top-0 z-20 max-w-[min(300px,calc(100%-24px))] rounded-xl border border-white/[0.09] px-3.5 py-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
+            style={{ ...glass, opacity: 0, display: hovered >= 0 ? 'block' : 'none', fontFamily: GALAXY_FONT_STACK }}
           >
-            <div className="text-[11px] font-semibold uppercase tracking-wide mb-1" style={{ color: TYPE_COLORS[hoveredDoc.type] }}>
-              {hoveredDoc.type}
-            </div>
-            <div className="text-sm text-text-primary font-medium">{extractTitle(hoveredDoc.source_file)}</div>
-            {hoveredDoc.concepts.length > 0 && (
-              <div className="text-[11px] text-text-muted mt-1">
-                {hoveredDoc.concepts.slice(0, 4).join(', ')}
-              </div>
+            {hovered >= 0 && (
+              <>
+                <div className="flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.14em]" style={{ color: galaxyTypeColor(data.docs[hovered].type) }}>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: galaxyTypeColor(data.docs[hovered].type) }} />
+                  {data.docs[hovered].type}
+                </div>
+                <div className="mt-1 text-[14px] leading-snug font-semibold text-text-primary line-clamp-2 break-words">{data.titles[hovered]}</div>
+                <div className="mt-1 text-[12px] text-text-muted tabular-nums">
+                  {data.dateSources[hovered] === 'indexed' ? `indexed ${formatDay(data.dates[hovered])}` : formatDay(data.dates[hovered])}
+                  <span className="text-text-muted/70"> · {hover.touch ? 'tap again to open' : 'click to open'}</span>
+                </div>
+              </>
             )}
           </div>
         )}
 
-        <div
-          className="absolute bottom-4 left-4 flex gap-1 rounded-[10px] px-2 py-1.5 text-[11px] text-text-secondary backdrop-blur-xl border border-white/[0.08]"
-          style={{ background: 'rgba(10, 10, 20, 0.7)' }}
-        >
-          {Object.entries(TYPE_COLORS).filter(([k]) => k !== 'unknown').map(([type, color]) => {
-            const active = visibleTypes.has(type);
-            return (
-              <button
-                key={type}
-                onClick={() => setVisibleTypes(prev => {
-                  const next = new Set(prev);
-                  if (next.has(type)) next.delete(type);
-                  else next.add(type);
-                  return next;
-                })}
-                className={`flex items-center gap-[5px] px-2 py-1 rounded-md cursor-pointer border-none transition-all duration-150 ${active ? 'opacity-100' : 'opacity-30'}`}
-                style={{ background: active ? `${color}15` : 'transparent' }}
-              >
-                <span className="w-[7px] h-[7px] rounded-full" style={{ background: color }} />
-                {type}
-              </button>
-            );
-          })}
+        {/* search */}
+        <form onSubmit={runSearch} className="absolute top-3 sm:top-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 w-[min(420px,calc(100%-24px))]" role="search">
+          <div className="relative flex-1 min-w-0">
+            <input
+              type="search"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search — matching stars pulse"
+              aria-label="Search the galaxy"
+              enterKeyHint="search"
+              className="w-full pl-4 pr-9 py-2.5 rounded-xl text-[14px] text-text-primary border border-white/[0.09] outline-none transition-colors duration-200 focus:border-[#8ab4ff]/60 placeholder:text-text-muted [&::-webkit-search-cancel-button]:hidden"
+              style={glass}
+            />
+            {searching && <span className="absolute right-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-[#8ab4ff] animate-search-pulse" />}
+          </div>
+          {(query || matches) && (
+            <button type="button" onClick={clearSearch} className="shrink-0 px-3 py-2.5 rounded-xl text-[12px] text-text-secondary border border-white/[0.09] transition-colors duration-200 hover:text-text-primary hover:border-white/20" style={glass}>
+              Clear
+            </button>
+          )}
+        </form>
+        {matches && (
+          <div className="absolute top-[58px] sm:top-[64px] left-1/2 -translate-x-1/2 z-10 text-[11.5px] text-text-secondary px-3 py-1 rounded-full border border-white/[0.07] whitespace-nowrap" style={glass}>
+            <span className="text-text-primary font-semibold tabular-nums">{matches.size.toLocaleString()}</span> matching stars{searchNote ? ` · ${searchNote}` : ''}
+          </div>
+        )}
+
+        {/* legend — colour / size / brightness, each tied to its API field */}
+        <div className="absolute bottom-3 left-3 sm:bottom-4 sm:left-4 z-10 max-w-[calc(100%-24px)] sm:max-w-[340px] rounded-xl border border-white/[0.08] px-3 py-2.5 text-[11.5px] text-text-secondary" style={glass}>
+          <div className="flex flex-wrap gap-1">
+            {types.map(([t, n]) => {
+              const on = !hiddenTypes.has(t);
+              const c = galaxyTypeColor(t);
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => toggleType(t)}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-opacity duration-150 ${on ? 'opacity-100' : 'opacity-35'}`}
+                  style={{ background: on ? `${c}14` : 'transparent' }}
+                >
+                  <span className="w-2 h-2 rounded-full" style={{ background: c, boxShadow: on ? `0 0 8px ${c}` : 'none' }} />
+                  <span className="text-text-primary">{t}</span>
+                  <span className="tabular-nums text-text-muted">{n.toLocaleString()}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-2 grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-1 leading-snug">
+            <span className="text-text-muted">colour</span><span>type{types.length === 1 ? ' (one type in this index)' : ''}</span>
+            <span className="text-text-muted">brightness</span><span>recency rank · path date, else index time; dim = undated</span>
+            <span className="text-text-muted">size</span><span>{data.hasChunks ? 'chunk count' : 'uniform — API has no chunk count yet'}</span>
+          </div>
         </div>
 
-        <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col gap-1">
-          <button
-            onClick={() => { targetDist.current = Math.max(3, targetDist.current * 0.75); }}
-            className="w-9 h-9 rounded-[10px] text-text-primary text-lg font-medium cursor-pointer flex items-center justify-center backdrop-blur-xl border border-white/[0.08] transition-all duration-200 hover:border-accent hover:text-accent"
-            style={{ background: 'rgba(10, 10, 20, 0.7)' }}
-          >+</button>
-          <button
-            onClick={() => { targetDist.current = Math.min(500, targetDist.current * 1.35); }}
-            className="w-9 h-9 rounded-[10px] text-text-primary text-lg font-medium cursor-pointer flex items-center justify-center backdrop-blur-xl border border-white/[0.08] transition-all duration-200 hover:border-accent hover:text-accent"
-            style={{ background: 'rgba(10, 10, 20, 0.7)' }}
-          >-</button>
-          <button
-            onClick={() => {
-              targetAngleX.current = 0;
-              targetAngleY.current = 0.3;
-              targetDist.current = globes.length > 1 ? 55 : 28;
-              targetCenter.current.set(0, 0, 0);
-            }}
-            className="w-9 h-9 rounded-[10px] text-text-primary text-lg font-medium cursor-pointer flex items-center justify-center backdrop-blur-xl border border-white/[0.08] transition-all duration-200 hover:border-accent hover:text-accent"
-            style={{ background: 'rgba(10, 10, 20, 0.7)' }}
-            title="Reset view (all globes)"
-          >R</button>
-          <button
-            onClick={() => {
-              const meshes = meshesRef.current;
-              let cx = 0, cy = 0, cz = 0, count = 0;
-              meshes.forEach(m => {
-                if (m.visible) { cx += m.position.x; cy += m.position.y; cz += m.position.z; count++; }
-              });
-              if (count > 0) {
-                targetCenter.current.set(cx / count, cy / count, cz / count);
-                targetDist.current = 6;
-              }
-            }}
-            className="w-9 h-9 rounded-[10px] text-text-primary text-lg font-medium cursor-pointer flex items-center justify-center backdrop-blur-xl border border-white/[0.08] transition-all duration-200 hover:border-accent hover:text-accent"
-            style={{ background: 'rgba(10, 10, 20, 0.7)' }}
-            title="Center on visible dots"
-          >C</button>
-        </div>
+        {/* camera controls */}
+        {!useFallback && data.count > 0 && (
+          <div className="absolute right-3 sm:right-4 top-1/2 -translate-y-1/2 z-10 flex flex-col gap-1.5">
+            {[
+              { label: '+', title: 'Zoom in', fn: () => engineRef.current?.zoomBy(0.72) },
+              { label: '−', title: 'Zoom out', fn: () => engineRef.current?.zoomBy(1.4) },
+              { label: '⌂', title: 'Reset view', fn: () => engineRef.current?.goHome() },
+            ].map(b => (
+              <button
+                key={b.title}
+                type="button"
+                onClick={b.fn}
+                title={b.title}
+                aria-label={b.title}
+                className="w-10 h-10 rounded-xl text-text-primary text-lg flex items-center justify-center border border-white/[0.09] transition-colors duration-200 hover:border-[#8ab4ff]/60 hover:text-[#cfe0ff]"
+                style={glass}
+              >
+                {b.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div className="w-[260px] bg-bg-card border-l border-border p-6 flex flex-col overflow-hidden">
-        <h2 className="text-xl font-bold text-text-primary mb-1">Knowledge Map</h2>
-        <span className="text-[11px] font-mono text-text-muted mb-4 block">{globes.length} globe{globes.length !== 1 ? 's' : ''} active</span>
-        <div className="flex flex-col gap-4 flex-1 min-h-0 overflow-y-auto">
-          {stats?.total && (
-            <div className="flex flex-col gap-0.5">
-              <span className="text-xl font-bold text-text-primary tabular-nums">{stats.total.toLocaleString()}</span>
-              <span className="text-xs text-text-muted">Total Indexed</span>
+      {/* sidebar (desktop) */}
+      <aside className="hidden md:flex w-[280px] shrink-0 flex-col border-l border-white/[0.06] p-6 overflow-hidden" style={{ background: 'rgba(8, 9, 20, 0.72)' }}>
+        <h1 className="text-[20px] font-semibold text-text-primary tracking-[-0.01em]">Knowledge Galaxy</h1>
+        <span className="mt-1 text-[11px] font-mono text-text-muted">
+          {engineKey} · PCA{variance ? ` ${variance.join(' / ')}%` : ''}
+        </span>
+        <div className="mt-5 flex flex-col gap-4 flex-1 min-h-0 overflow-y-auto pr-1">
+          <SideStat value={data.count} label="stars · one per file" />
+          {stats?.total ? <SideStat value={stats.total} label="docs in the index" /> : null}
+          <div className="grid grid-cols-3 gap-2">
+            <MiniStat value={data.dateSourceCounts.path} label="path date" />
+            <MiniStat value={data.dateSourceCounts.indexed} label="indexed" />
+            <MiniStat value={data.dateSourceCounts.undated} label="undated" />
+          </div>
+          {data.dateRange && (
+            <div className="text-[11.5px] text-text-muted">
+              {formatDay(data.dateRange.min)} → {formatDay(data.dateRange.max)}
             </div>
           )}
-          <div className="flex flex-col gap-0.5">
-            <span className="text-xl font-bold text-text-primary tabular-nums">{totalDocs.toLocaleString()}</span>
-            <span className="text-xs text-text-muted">Documents Mapped</span>
-          </div>
-          {Object.entries(typeCounts).map(([type, count]) => {
-            const globalChunks = stats?.by_type?.[type];
-            const globalFiles = (stats as any)?.by_type_files?.[type];
-            return (
-              <div key={type} className="flex flex-col gap-0.5">
-                <span className="text-xl font-bold tabular-nums" style={{ color: TYPE_COLORS[type] }}>{count.toLocaleString()}</span>
-                <span className="text-xs text-text-muted capitalize">
-                  {type}s{globalFiles ? ` (${globalFiles.toLocaleString()} files)` : globalChunks && globalChunks !== count ? ` (${globalChunks.toLocaleString()} chunks)` : ''}
-                </span>
-              </div>
-            );
-          })}
-          {stats?.vectors && stats.vectors.length > 0 && (
+
+          {clusters.length > 0 && (
             <>
-              <div className="h-px bg-border my-1" />
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-mono uppercase tracking-wide text-text-muted">Embedding Engines</span>
-                <span className="text-[9px] font-mono text-text-muted">LanceDB</span>
+              <Divider label={`Clusters · ${clusters.length}`} />
+              <div className="flex flex-col gap-0.5">
+                {clusters.map(c => (
+                  <div key={c.id} className="flex items-center justify-between gap-2 text-[12px]">
+                    <span className="truncate text-text-primary" style={{ fontFamily: GALAXY_FONT_STACK }}>
+                      <span className="text-text-muted">{c.kind === 'folder' ? '▢ ' : '● '}</span>{c.label}
+                    </span>
+                    <span className="tabular-nums text-text-muted">{c.size.toLocaleString()}</span>
+                  </div>
+                ))}
               </div>
-              {stats.vectors.map(v => {
-                const loaded = globes.find(g => g.key === v.key);
-                const gi = loaded ? globes.indexOf(loaded) : -1;
-                const globeColor = `#${(GLOBE_COLORS[v.key] || 0x6a5acd).toString(16).padStart(6, '0')}`;
-                const isLoading = loadingModel === v.key;
-                return (
-                  <button
-                    key={v.key}
-                    onClick={() => loaded ? flyToGlobe(gi) : v.enabled && addGlobe(v.key, v.model)}
-                    disabled={!v.enabled || isLoading}
-                    className={`flex flex-col gap-0.5 p-2 rounded-lg border text-left transition-all duration-150 ${
-                      loaded
-                        ? 'border-accent/40 bg-accent/5 hover:border-accent cursor-pointer'
-                        : v.enabled
-                          ? 'border-border bg-white/[0.02] hover:border-border-hover cursor-pointer'
-                          : 'border-border-subtle opacity-50 cursor-not-allowed'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: loaded ? globeColor : 'rgba(255,255,255,0.2)' }} />
-                        <span className="text-sm font-semibold text-text-primary">{v.key}</span>
-                      </div>
-                      <span className={`text-[9px] font-mono font-semibold uppercase px-1.5 py-0.5 rounded ${
-                        loaded ? 'bg-accent/20 text-accent' : isLoading ? 'bg-warning/20 text-warning' : v.enabled ? 'bg-success/20 text-success' : 'bg-red-500/20 text-red-400'
-                      }`}>
-                        {loaded ? 'Fly to' : isLoading ? 'Loading...' : v.enabled ? `+ Add` : 'Offline'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between ml-[18px]">
-                      <span className="text-xs text-text-muted font-mono">{v.model}</span>
-                      <span className="text-[9px] text-text-muted tabular-nums">{v.count.toLocaleString()}</span>
-                    </div>
-                  </button>
-                );
-              })}
+              <div className="text-[10.5px] text-text-muted leading-snug">● top concept of members · ▢ source folder (members carry no concepts)</div>
             </>
           )}
-          {totalOracles > 0 && (
+
+          {engines.length > 1 && (
             <>
-              <div className="h-px bg-border my-1" />
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-mono uppercase tracking-wide text-text-muted">Oracle Universe</span>
-                {selectedProject && (
+              <Divider label="Embedding engine" />
+              <div className="flex flex-col gap-1">
+                {engines.map(v => (
                   <button
-                    onClick={() => setSelectedProject(null)}
-                    className="text-[9px] font-mono text-accent cursor-pointer hover:underline"
+                    key={v.key}
+                    type="button"
+                    onClick={() => switchEngine(v.key)}
+                    disabled={switching}
+                    className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-left text-[12px] transition-colors duration-150 ${v.key === engineKey ? 'border-[#8ab4ff]/40 bg-[#8ab4ff]/[0.07] text-text-primary' : 'border-white/[0.06] text-text-secondary hover:border-white/[0.14]'}`}
                   >
-                    Clear filter
+                    <span className="font-medium">{v.key}</span>
+                    <span className="tabular-nums text-text-muted">{switching && v.key === engineKey ? '…' : v.count.toLocaleString()}</span>
                   </button>
-                )}
+                ))}
               </div>
+            </>
+          )}
+
+          {projects.length > 1 && (
+            <>
+              <Divider label="Project" />
               <div className="flex flex-col gap-0.5">
-                <span className="text-xl font-bold text-accent tabular-nums">{totalOracles}</span>
-                <span className="text-xs text-text-muted">
-                  {selectedProject ? `Filtering: ${selectedProject.split('/').pop()}` : 'Repos Indexed'}
-                </span>
-              </div>
-              <div className="flex flex-col gap-0.5 flex-1 overflow-y-auto">
-                {oracleProjects.map(p => {
-                  const name = p.project.split('/').pop() || p.project;
-                  const org = p.project.split('/').slice(-2, -1)[0] || '';
-                  const age = Date.now() - p.last_indexed;
-                  const ageLabel = age < 3600_000 ? '<1h' : age < 86400_000 ? `${Math.floor(age / 3600_000)}h` : `${Math.floor(age / 86400_000)}d`;
-                  const isSelected = selectedProject === p.project;
+                {projects.map(([p, n]) => {
+                  const on = project === p;
                   return (
                     <button
-                      key={p.project}
-                      onClick={() => setSelectedProject(isSelected ? null : p.project)}
-                      className={`flex items-center justify-between py-1 px-1.5 gap-2 rounded-md cursor-pointer text-left transition-all duration-150 border-none ${
-                        isSelected ? 'bg-accent/15' : 'bg-transparent hover:bg-white/[0.04]'
-                      }`}
+                      key={p || '(none)'}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => setProject(on ? null : p)}
+                      className={`flex items-center justify-between gap-2 px-1.5 py-1 rounded-md text-left text-[12px] transition-colors duration-150 ${on ? 'bg-[#8ab4ff]/[0.1] text-text-primary' : 'text-text-secondary hover:bg-white/[0.04]'}`}
                     >
-                      <div className="flex flex-col min-w-0">
-                        <span className={`text-xs truncate ${isSelected ? 'text-accent font-semibold' : 'text-text-primary'}`} title={p.project}>{name}</span>
-                        <span className="text-[9px] text-text-muted truncate">{org}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <span className={`text-[9px] tabular-nums ${isSelected ? 'text-accent' : 'text-text-muted'}`}>{p.docs}</span>
-                        <span className={`w-1.5 h-1.5 rounded-full ${age < 86400_000 ? 'bg-success' : age < 604800_000 ? 'bg-warning' : 'bg-text-muted'}`} title={ageLabel + ' ago'} />
-                      </div>
+                      <span className="truncate">{p ? p.split('/').slice(-1)[0] : '(no project)'}</span>
+                      <span className="tabular-nums text-text-muted">{n.toLocaleString()}</span>
                     </button>
                   );
                 })}
               </div>
             </>
           )}
-          {matchIds.size > 0 && (
-            <>
-              <div className="h-px bg-border my-1" />
-              <div className="flex flex-col gap-0.5">
-                <span className="text-xl font-bold tabular-nums" style={{ color: '#4ade80' }}>{matchIds.size}</span>
-                <span className="text-xs text-text-muted capitalize">Search Matches</span>
-              </div>
-            </>
-          )}
         </div>
-        <div className="text-[11px] text-text-muted mt-6 leading-relaxed">
-          Drag to orbit. Scroll to zoom. Click globe in sidebar to fly.
+        <div className="mt-5 text-[11px] text-text-muted leading-relaxed">
+          Drag to orbit · scroll or pinch to zoom · hover a star, click to open.
+          {reducedMotion ? ' Reduced motion: static scene.' : ''}
         </div>
-      </div>
+      </aside>
+
+      {selected >= 0 && selected < data.count && (
+        <DocSheet data={data} idx={selected} reducedMotion={reducedMotion} onClose={() => setSelected(-1)} />
+      )}
     </div>
   );
 }
 
-function extractTitle(sourceFile: string): string {
-  const parts = sourceFile.split('/');
-  const filename = parts[parts.length - 1] || sourceFile;
-  return filename.replace(/\.md$/, '').replace(/_/g, ' ');
+const SPACE_BG =
+  'radial-gradient(1100px 760px at 62% 38%, rgba(58, 66, 150, 0.22), transparent 62%),' +
+  'radial-gradient(800px 640px at 18% 82%, rgba(120, 64, 150, 0.12), transparent 60%),' +
+  'linear-gradient(180deg, #05060f 0%, #03030a 100%)';
+
+function SideStat({ value, label }: { value: number; label: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[22px] font-semibold text-text-primary tabular-nums leading-none">{value.toLocaleString()}</span>
+      <span className="text-[12px] text-text-muted">{label}</span>
+    </div>
+  );
+}
+
+function MiniStat({ value, label }: { value: number; label: string }) {
+  return (
+    <div className="flex flex-col gap-0.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2 py-1.5">
+      <span className="text-[14px] font-semibold text-text-primary tabular-nums">{value.toLocaleString()}</span>
+      <span className="text-[10.5px] text-text-muted">{label}</span>
+    </div>
+  );
+}
+
+function Divider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 pt-1">
+      <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-text-muted whitespace-nowrap">{label}</span>
+      <span className="h-px flex-1 bg-white/[0.06]" />
+    </div>
+  );
 }
