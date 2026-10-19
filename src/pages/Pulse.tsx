@@ -320,11 +320,12 @@ export function Pulse() {
       {/* Active Oracles bar */}
       <div className="border-b border-white/[0.06] px-6 py-5">
         <div className="max-w-[960px] mx-auto">
-          <div className="flex items-center gap-4 mb-4">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4">
             <h1 className="text-2xl font-bold text-white">Oracle Pulse</h1>
             <span className="text-sm font-mono text-white/50">{total} events</span>
-            <div className="ml-auto flex items-center gap-3">
-              <LiveDot lastOkAt={feed.lastOkAt} lastErr={feed.lastErr} hidden={feed.hidden} nextAt={feed.nextAt} />
+            {/* wraps at 390 px (T16 #14); the HUD above already shows the dot's text on phones */}
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+              <LiveDot lastOkAt={feed.lastOkAt} lastErr={feed.lastErr} hidden={feed.hidden} nextAt={feed.nextAt} labelClassName="max-sm:hidden" />
               {/* freeze stops applying new data; polling (and the dot) keep going */}
               <button
                 onClick={() => feed.setFrozen(!feed.frozen)}

@@ -116,7 +116,8 @@ export function Constellation({ feed, onTerminal }: ConstellationProps) {
         hideHostNodes={hideHostNodes}
         onHideHostNodes={setHideHostNodes}
       />
-      <p className="sr-only" aria-live="polite">{summary(graph)}</p>
+      {/* plain sr-only text: the LiveDot status is the page's one live region (T16 #13) */}
+      <p className="sr-only">{summary(graph)}</p>
       {sheet && (
         <OracleSheet
           data={sheet}

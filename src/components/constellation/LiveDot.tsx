@@ -18,6 +18,8 @@ interface LiveDotProps {
   /** the one screen-reader announcer on the page (state changes only) */
   announce?: boolean;
   className?: string;
+  /** extra classes for the visible text label (e.g. hide it on phones) */
+  labelClassName?: string;
 }
 
 /**
@@ -25,7 +27,7 @@ interface LiveDotProps {
  * poll, amber to 60 s, red after that or on error, grey while the tab is
  * hidden. Owns its own 1 s ticker so the page does not re-render every second.
  */
-export function LiveDot({ lastOkAt, lastErr, hidden, nextAt, announce = false, className }: LiveDotProps) {
+export function LiveDot({ lastOkAt, lastErr, hidden, nextAt, announce = false, className, labelClassName }: LiveDotProps) {
   const [now, setNow] = useState(() => Date.now());
   const reducedMotion = useSyncExternalStore(subscribeReducedMotion, getReducedMotion, () => false);
 
@@ -48,7 +50,7 @@ export function LiveDot({ lastOkAt, lastErr, hidden, nextAt, announce = false, c
         )}
         <span className="relative inline-flex w-2.5 h-2.5 rounded-full" style={{ background: color }} />
       </span>
-      <span className="tabular-nums whitespace-nowrap" aria-hidden="true">{label}</span>
+      <span className={`tabular-nums whitespace-nowrap ${labelClassName ?? ''}`} aria-hidden="true">{label}</span>
     </span>
   );
 }
