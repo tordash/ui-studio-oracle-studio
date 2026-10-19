@@ -10,28 +10,14 @@
 // points arra #58 will return in the same shape.
 
 import type { MapDocument } from '../../api/oracle';
+import { getTypeColor } from '../type-colors';
 
 /** World radius the normalised PCA cube is scaled to. */
 export const GALAXY_RADIUS = 10;
 
-/**
- * Cinematic, restrained palette per doc type. Same hue families as the app
- * badges (lib/type-colors.ts) but softened for additive glow on deep space.
- */
-export const GALAXY_TYPE_COLORS: Record<string, string> = {
-  learning: '#8ab4ff',  // ice blue
-  principle: '#c3a6ff', // soft violet
-  retro: '#7fe0b0',     // sea green
-  pattern: '#ffc078',   // warm amber
-  trace: '#7dd3fc',
-  thread: '#a5b4fc',
-  resonance: '#ff9fb8',
-  handoff: '#67e8f9',
-};
-export const GALAXY_UNKNOWN_COLOR = '#8b93a7';
-
+/** Star colour per doc type — the same palette as the badges (lib/type-colors.ts, decision S2). */
 export function galaxyTypeColor(type: string | null | undefined): string {
-  return (type && GALAXY_TYPE_COLORS[type]) || GALAXY_UNKNOWN_COLOR;
+  return getTypeColor(type);
 }
 
 /** '#rrggbb' → [r, g, b] in 0..1 */

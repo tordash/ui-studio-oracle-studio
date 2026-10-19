@@ -4,9 +4,10 @@ import {
   parsePathDate, docDate, recencyBrightness, BRIGHT_MIN, BRIGHT_MAX, BRIGHT_UNDATED,
   chunkCount, sizeForChunks, SIZE_UNIFORM, SIZE_MAX, normalizeSourcePath, sourceFolder,
   prepareGalaxy, matchSearchResults, matchLocal, computeStates,
-  STATE_NORMAL, STATE_DIM, STATE_MATCH, STATE_HIDDEN, galaxyTypeColor, GALAXY_UNKNOWN_COLOR, hexToRgb01,
+  STATE_NORMAL, STATE_DIM, STATE_MATCH, STATE_HIDDEN, galaxyTypeColor, hexToRgb01,
   GALAXY_RADIUS,
 } from '../mapping';
+import { getTypeColor, TYPE_COLORS, TYPE_COLOR_FALLBACK } from '../../type-colors';
 
 const doc = (o: Partial<MapDocument> & { id: string }): MapDocument => ({
   type: 'learning', source_file: `${o.id}.md`, concepts: [], project: null, x: 0, y: 0, z: 0, created_at: null, ...o,
@@ -65,9 +66,16 @@ describe('paths & colours', () => {
     expect(sourceFolder('clients/dopelab/social-content/a.md')).toBe('clients/dopelab');
   });
   it('colours by type with an honest unknown fallback', () => {
-    expect(galaxyTypeColor('learning')).not.toBe(GALAXY_UNKNOWN_COLOR);
-    expect(galaxyTypeColor('nope')).toBe(GALAXY_UNKNOWN_COLOR);
+    expect(galaxyTypeColor('learning')).not.toBe(TYPE_COLOR_FALLBACK);
+    expect(galaxyTypeColor('nope')).toBe(TYPE_COLOR_FALLBACK);
+    expect(galaxyTypeColor(null)).toBe(TYPE_COLOR_FALLBACK);
     expect(hexToRgb01('#ff0000')).toEqual([1, 0, 0]);
+  });
+  it('glow and badges share one palette; pattern is orange', () => {
+    for (const t of [...Object.keys(TYPE_COLORS), 'nope']) expect(galaxyTypeColor(t)).toBe(getTypeColor(t));
+    expect(getTypeColor('pattern')).toBe('#f59e0b');
+    const g = prepareGalaxy([doc({ id: 'p', type: 'pattern' })]);
+    expect(Array.from(g.colors.slice(0, 3))).toEqual(hexToRgb01('#f59e0b').map(v => Math.fround(v)));
   });
 });
 
