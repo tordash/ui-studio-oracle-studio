@@ -17,15 +17,21 @@
 
 import * as THREE from 'three';
 import type { Graph } from '../../lib/constellation/aggregate';
-import { assignSticky, rankScore, slerpUnit, easeInOut, SHELL_R, SLOT_MOVE_MS } from '../../lib/constellation/layout';
+import type { GraphEdge } from '../../lib/constellation/aggregate';
+import type { ParsedMsg } from '../../lib/constellation/parse';
+import { assignSticky, rankScore, slerpUnit, easeInOut, arcControl, SHELL_R, SLOT_MOVE_MS } from '../../lib/constellation/layout';
 import type { SlotState, Vec3 } from '../../lib/constellation/layout';
 import { oracleColor, NODE_COLOR } from '../../lib/constellation/colors';
-import { UTIME_START } from '../../lib/constellation/schedule';
+import { UTIME_START, newFireRing, packFire, pushFire, schedulePulses } from '../../lib/constellation/schedule';
+import type { Fire, FireRing } from '../../lib/constellation/schedule';
+import { edgeDim, pulseDuration } from '../../lib/constellation/ribbon-geom';
+import { edgeWidthPx } from '../../lib/constellation/width';
 import { keepAlive, clampDt, drawCallBudget } from '../../lib/constellation/loop-state';
 import { hexToRgb01 } from '../../lib/galaxy/mapping';
 import { mulberry32 } from '../../lib/galaxy/clusters';
 import { bindRenderGate, cappedPixelRatio, isPhoneLike, GLOW_POINT_FRAG } from '../../lib/three';
 import { STAR_VERT, STAR_FRAG, SHELL_VERT, SHELL_FRAG, NODE_VERT, RING_VERT, RING_FRAG } from './shaders';
+import { RibbonLayer } from './ribbon';
 
 const FOV = 50;
 const MAX_NODES = 64;
@@ -33,6 +39,11 @@ const CLEAR = 0x04050b;
 const HOT_MS = 2 * 60_000;
 const DIM_UNFOCUSED = 0.2;
 const HOME = { dist: 24, yaw: 0, pitch: 0.18 };
+const FLASH_S = 0.4;
+/** intro replay of the last ≤ 10 messages starts 2.4 s in */
+const INTRO_REPLAY_AT = 2.4;
+
+export type PulseMode = 'first' | 'live' | 'catchup';
 
 /** node visual diameter, CSS px: 6 + 5·sqrt(activity), cap 34 */
 export const nodeSizePx = (activity: number) => Math.min(34, 6 + 5 * Math.sqrt(Math.max(0, activity)));
@@ -88,6 +99,7 @@ export class ConstellationEngine {
   private ringMat: THREE.ShaderMaterial;
   private nodeAttr: Record<'position' | 'aColor' | 'aSize' | 'aAlpha' | 'aHot' | 'aRank', THREE.BufferAttribute>;
   private ringAttr: Record<'position' | 'aColor' | 'aSize' | 'aAlpha' | 'aFlags' | 'aFlash', THREE.BufferAttribute>;
+  private ribbons: RibbonLayer;
 
   protected width = 1;
   protected height = 1;
@@ -106,6 +118,15 @@ export class ConstellationEngine {
   /** draw order = graph.nodes order */
   protected order: string[] = [];
   protected view: ViewInput = { focus: new Set(), selected: null, hideHostNodes: false };
+  /** drawn edges, instance order */
+  protected edgeList: GraphEdge[] = [];
+  private edgeIdx = new Map<string, number>();
+  private fireRings = new Map<string, FireRing>();
+  private arrivals: { key: string; at: number }[] = [];
+  private flashes = new Map<string, { start: number; k: number }>();
+  private newRing = new Set<string>();
+  private pulseUntil = 0;
+  private flashUntil = 0;
 
   // loop
   private raf = 0;
@@ -222,6 +243,11 @@ export class ConstellationEngine {
     this.rings.frustumCulled = false;
     this.rings.renderOrder = 4;
     this.scene.add(this.rings);
+
+    // ── ribbons: all edges + pulses, one instanced draw ──
+    this.ribbons = new RibbonLayer(SHELL_R);
+    this.scene.add(this.ribbons.mesh);
+
     this.homeDist = this.fitDistance();
     this.dist = this.homeDist;
     this.applyCamera();
@@ -262,11 +288,28 @@ export class ConstellationEngine {
     this.order = graph.nodes.filter(n => st.assign.has(n.key)).slice(0, MAX_NODES).map(n => n.key);
     if (first) this.startIntro();
     this.writeNodes();
+    this.writeRibbons();
     this.requestRender();
   }
 
   setView(view: ViewInput) {
     this.view = view;
+    this.writeNodes();
+    this.writeRibbons();
+    this.requestRender();
+  }
+
+  /**
+   * New messages from one poll → pulses (T5 schedule). 'first' replays during
+   * the intro; reduced motion gets static "new" rings instead.
+   */
+  pulse(msgs: readonly ParsedMsg[], mode: PulseMode) {
+    const lead = mode === 'first' && this.introOn ? Math.max(0.05, INTRO_REPLAY_AT - this.introT) : 0.05;
+    const r = schedulePulses({ msgs, startS: this.time + lead, nowMs: Date.now(), mode, reducedMotion: this.reduced });
+    this.newRing = r.newRing;
+    this.applyFires(r.fires);
+    for (const k of r.catchUpFlash) this.flashes.set(k, { start: this.time, k: 0.5 });
+    if (r.catchUpFlash.size) this.flashUntil = Math.max(this.flashUntil, this.time + FLASH_S);
     this.writeNodes();
     this.requestRender();
   }
@@ -297,6 +340,7 @@ export class ConstellationEngine {
   // ── internals ──
 
   protected disposeScene() {
+    this.ribbons.dispose();
     this.stars.geometry.dispose();
     this.starMat.dispose();
     this.shell.geometry.dispose();
@@ -358,7 +402,9 @@ export class ConstellationEngine {
       ra.aColor.setXYZ(i, cr, cg, cb);
       ra.aSize.setX(i, size);
       ra.aAlpha.setX(i, hidden ? 0 : dim);
-      ra.aFlags.setXYZW(i, this.view.selected === key ? 1 : 0, now - n.lastTs < HOT_MS ? 1 : 0, n.kind === 'node' ? 1 : 0, this.ringNew(key));
+      ra.aFlags.setXYZW(i, this.view.selected === key ? 1 : 0, now - n.lastTs < HOT_MS ? 1 : 0, n.kind === 'node' ? 1 : 0, this.newRing.has(key) ? 1 : 0);
+      const fl = this.flashes.get(key);
+      ra.aFlash.setXY(i, fl ? fl.start : 0, fl ? fl.k : 0);
       i++;
     }
     this.nodes.geometry.setDrawRange(0, i);
@@ -367,8 +413,83 @@ export class ConstellationEngine {
     for (const a of Object.values(ra)) a.needsUpdate = true;
   }
 
-  /** reduced-motion "new" ring flag (pulses add it) */
-  protected ringNew(key: string): number { void key; return 0; }
+  private colorOf(key: string): [number, number, number] {
+    const r = this.rt.get(key);
+    return hexToRgb01(r?.kind === 'node' ? NODE_COLOR : oracleColor(key));
+  }
+
+  private curve(a: string, b: string): [Vec3, Vec3, Vec3] {
+    const da = this.rt.get(a)!.dir, db = this.rt.get(b)!.dir;
+    const from: Vec3 = [da[0] * SHELL_R, da[1] * SHELL_R, da[2] * SHELL_R];
+    const to: Vec3 = [db[0] * SHELL_R, db[1] * SHELL_R, db[2] * SHELL_R];
+    return [from, to, arcControl(from, to, SHELL_R)];
+  }
+
+  /** Rebuild every ribbon instance from graph + view (data changes only). */
+  protected writeRibbons() {
+    const g = this.graph;
+    if (!g) return;
+    const list = g.edges.filter(e => this.rt.has(e.a) && this.rt.has(e.b) && !this.isHidden(e.a) && !this.isHidden(e.b));
+    this.ribbons.ensure(list.length);
+    this.edgeIdx.clear();
+    list.forEach((e, i) => {
+      this.edgeIdx.set(e.key, i);
+      let ring = this.fireRings.get(e.key);
+      if (!ring) { ring = newFireRing(); this.fireRings.set(e.key, ring); }
+      const [from, to, ctrl] = this.curve(e.a, e.b);
+      this.ribbons.write(i, {
+        from, to, ctrl,
+        width: edgeWidthPx(e.count),
+        colA: this.colorOf(e.a),
+        colB: this.colorOf(e.b),
+        heat: e.heat,
+        share: e.count > 0 ? e.countAB / e.count : 0.5,
+        fire: packFire(ring),
+        dim: edgeDim(e, this.view.focus, this.view.selected),
+      });
+    });
+    this.edgeList = list;
+    this.ribbons.commit(list.length);
+  }
+
+  /** Endpoints moved (slot slerp): re-upload the curve attributes only. */
+  private moveRibbons() {
+    this.edgeList.forEach((e, i) => {
+      const [from, to, ctrl] = this.curve(e.a, e.b);
+      this.ribbons.patch(i, 'aFrom', from);
+      this.ribbons.patch(i, 'aTo', to);
+      this.ribbons.patch(i, 'aCtrl', ctrl);
+    });
+  }
+
+  private applyFires(fires: readonly Fire[]) {
+    for (const f of fires) {
+      const i = this.edgeIdx.get(f.edge);
+      const ring = this.fireRings.get(f.edge);
+      if (i === undefined || !ring) continue;
+      pushFire(ring, f.at, f.dir);
+      this.ribbons.patch(i, 'aFire', packFire(ring));
+      const e = this.edgeList[i];
+      const [from, to] = this.curve(e.a, e.b);
+      const dur = pulseDuration(Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]));
+      this.arrivals.push({ key: f.to, at: f.at + dur });
+      this.pulseUntil = Math.max(this.pulseUntil, f.at + dur * 1.25);
+    }
+  }
+
+  /** Pulse heads reaching their receiver → 400 ms flash ring. */
+  private stepArrivals() {
+    if (this.arrivals.length === 0) return;
+    let changed = false;
+    this.arrivals = this.arrivals.filter(a => {
+      if (a.at > this.time) return true;
+      this.flashes.set(a.key, { start: this.time, k: 1 });
+      this.flashUntil = Math.max(this.flashUntil, this.time + FLASH_S);
+      changed = true;
+      return false;
+    });
+    if (changed) this.writeNodes();
+  }
 
   /** Advance slot slerps; returns true while any node is moving. */
   protected stepSlots(now: number): boolean {
@@ -410,11 +531,13 @@ export class ConstellationEngine {
   /** Subclass hook: camera easing / drift. Returns true while the camera moves. */
   protected stepCamera(dt: number): boolean { void dt; return false; }
 
-  /** Subclass hook: per-frame work after the camera moved (labels, ribbons). */
+  /** Subclass hook: per-frame work after the camera moved (labels). */
   protected afterFrame(cameraMoved: boolean): void { void cameraMoved; }
 
-  /** Subclass hook: live pulses / flashes on screen. */
-  protected pulsesLive(): boolean { return false; }
+  /** A pulse head, a pending arrival or a flash ring is on screen. */
+  protected pulsesLive(): boolean {
+    return this.time < this.pulseUntil || this.time < this.flashUntil || this.arrivals.length > 0;
+  }
 
   /** Subclass hook: idle drift allowed now. */
   protected driftAllowed(): boolean { return false; }
@@ -438,9 +561,19 @@ export class ConstellationEngine {
       if (this.introT > 6.4) this.finishIntro();
     }
     const slerp = this.stepSlots(now);
+    if (slerp) this.moveRibbons();
+    this.stepArrivals();
     const easing = this.stepCamera(dt);
     this.applyCamera();
     this.ringMat.uniforms.uTime.value = this.time;
+    this.ribbons.setUniforms({
+      time: this.time,
+      draw: this.introOn ? Math.min(1, Math.max(0, (this.introT - 1.2) / 1.2)) : 1,
+      width: this.width,
+      height: this.height,
+      pixelRatio: this.pixelRatio,
+      centerZ: -this.dist,
+    });
     this.afterFrame(easing || slerp);
 
     this.renderer.render(this.scene, this.camera);
@@ -543,7 +676,7 @@ export class ConstellationEngine {
         geometries: r.memory.geometries,
         textures: r.memory.textures,
         nodes: this.order.length,
-        edges: this.graph?.edges.length ?? 0,
+        edges: this.edgeList.length,
         drawCallBudget: drawCallBudget(this.phone),
         pixelRatio: this.pixelRatio,
         reducedMotion: this.reduced ? 1 : 0,
