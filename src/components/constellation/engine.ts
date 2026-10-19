@@ -32,6 +32,12 @@ import { mulberry32 } from '../../lib/galaxy/clusters';
 import { bindRenderGate, cappedPixelRatio, isPhoneLike, GLOW_POINT_FRAG } from '../../lib/three';
 import { STAR_VERT, STAR_FRAG, SHELL_VERT, SHELL_FRAG, NODE_VERT, RING_VERT, RING_FRAG } from './shaders';
 import { RibbonLayer } from './ribbon';
+import { OrbitRig } from './orbit';
+import { DomLabelPool } from './labels';
+import type { LabelItem } from './labels';
+import { chooseLabels, labelPriority, backside } from '../../lib/constellation/label-pool';
+import { pickNode, pickEdge, bezierSamples } from '../../lib/constellation/pick';
+import type { ScreenNode } from '../../lib/constellation/pick';
 
 const FOV = 50;
 const MAX_NODES = 64;
@@ -48,9 +54,22 @@ export type PulseMode = 'first' | 'live' | 'catchup';
 /** node visual diameter, CSS px: 6 + 5·sqrt(activity), cap 34 */
 export const nodeSizePx = (activity: number) => Math.min(34, 6 + 5 * Math.sqrt(Math.max(0, activity)));
 
+export interface HoverInfo {
+  kind: 'node' | 'edge';
+  /** node key, or edge pairKey */
+  key: string;
+  /** CSS px inside the canvas */
+  x: number;
+  y: number;
+}
+
 export interface ConstellationCallbacks {
   /** WebGL init failed or the context was lost → show the 2D fallback at once */
   onContextLost: () => void;
+  /** tap / click / label button: a node key, or null for empty space */
+  onSelect: (key: string | null) => void;
+  /** desktop hover over a node or an arc; null = nothing */
+  onHover: (h: HoverInfo | null) => void;
 }
 
 export interface ViewInput {
@@ -105,11 +124,15 @@ export class ConstellationEngine {
   protected height = 1;
   protected pixelRatio = 1;
 
-  // camera pose (yaw, pitch, dist) around the shell centre
-  protected yaw = HOME.yaw;
-  protected pitch = HOME.pitch;
-  protected dist = HOME.dist;
+  // camera: orbit rig around the shell centre
+  protected orbit: OrbitRig;
   protected homeDist = HOME.dist;
+  private labels: DomLabelPool;
+  private hovered: string | null = null;
+  private labelsDirty = true;
+  private poseKey: number[] = [];
+  private tmpV = new THREE.Vector3();
+  protected lastInputAt = 0;
 
   // data
   protected graph: Graph | null = null;
@@ -249,7 +272,14 @@ export class ConstellationEngine {
     this.scene.add(this.ribbons.mesh);
 
     this.homeDist = this.fitDistance();
-    this.dist = this.homeDist;
+    this.orbit = new OrbitRig(canvas, { ...HOME, dist: this.homeDist }, { phone: this.phone, reduced: reducedMotion }, {
+      onTap: this.onTap,
+      onHover: this.onHoverAt,
+      onInput: this.onInput,
+      onChange: this.requestRender,
+    });
+    this.labels = new DomLabelPool(container, key => this.cb.onSelect(key));
+    this.lastInputAt = performance.now();
     this.applyCamera();
     this.bindEvents();
     this.exposeDebug();
@@ -293,7 +323,10 @@ export class ConstellationEngine {
   }
 
   setView(view: ViewInput) {
+    const prevSel = this.view.selected;
     this.view = view;
+    if (view.selected && view.selected !== prevSel) this.flyTo(view.selected);
+    this.labelsDirty = true;
     this.writeNodes();
     this.writeRibbons();
     this.requestRender();
@@ -314,8 +347,24 @@ export class ConstellationEngine {
     this.requestRender();
   }
 
+  /** Ease (0.9 s) so the node sits front-centre at 0.85× home distance; snaps under reduced motion. */
+  flyTo(key: string) {
+    const r = this.rt.get(key);
+    if (!r) return;
+    const d = r.dir;
+    this.finishIntro();
+    this.orbit.easeTo({ yaw: Math.atan2(d[0], d[2]), pitch: Math.asin(Math.max(-1, Math.min(1, d[1]))), dist: this.homeDist * 0.85 }, 0.9);
+    this.requestRender();
+  }
+
+  resetCamera() {
+    this.orbit.reset();
+    this.requestRender();
+  }
+
   setReducedMotion(reduced: boolean) {
     this.reduced = reduced;
+    this.orbit.setReducedMotion(reduced);
     this.ringMat.uniforms.uMotion.value = reduced ? 0 : 1;
     if (reduced) this.finishIntro();
     this.requestRender();
@@ -327,6 +376,8 @@ export class ConstellationEngine {
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.unbindEvents();
+    this.orbit.dispose();
+    this.labels.dispose();
     this.disposeScene();
     this.scene.clear();
     this.renderer.dispose();
@@ -418,7 +469,7 @@ export class ConstellationEngine {
     return hexToRgb01(r?.kind === 'node' ? NODE_COLOR : oracleColor(key));
   }
 
-  private curve(a: string, b: string): [Vec3, Vec3, Vec3] {
+  private curveOf(a: string, b: string): [Vec3, Vec3, Vec3] {
     const da = this.rt.get(a)!.dir, db = this.rt.get(b)!.dir;
     const from: Vec3 = [da[0] * SHELL_R, da[1] * SHELL_R, da[2] * SHELL_R];
     const to: Vec3 = [db[0] * SHELL_R, db[1] * SHELL_R, db[2] * SHELL_R];
@@ -436,7 +487,7 @@ export class ConstellationEngine {
       this.edgeIdx.set(e.key, i);
       let ring = this.fireRings.get(e.key);
       if (!ring) { ring = newFireRing(); this.fireRings.set(e.key, ring); }
-      const [from, to, ctrl] = this.curve(e.a, e.b);
+      const [from, to, ctrl] = this.curveOf(e.a, e.b);
       this.ribbons.write(i, {
         from, to, ctrl,
         width: edgeWidthPx(e.count),
@@ -455,7 +506,7 @@ export class ConstellationEngine {
   /** Endpoints moved (slot slerp): re-upload the curve attributes only. */
   private moveRibbons() {
     this.edgeList.forEach((e, i) => {
-      const [from, to, ctrl] = this.curve(e.a, e.b);
+      const [from, to, ctrl] = this.curveOf(e.a, e.b);
       this.ribbons.patch(i, 'aFrom', from);
       this.ribbons.patch(i, 'aTo', to);
       this.ribbons.patch(i, 'aCtrl', ctrl);
@@ -470,7 +521,7 @@ export class ConstellationEngine {
       pushFire(ring, f.at, f.dir);
       this.ribbons.patch(i, 'aFire', packFire(ring));
       const e = this.edgeList[i];
-      const [from, to] = this.curve(e.a, e.b);
+      const [from, to] = this.curveOf(e.a, e.b);
       const dur = pulseDuration(Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]));
       this.arrivals.push({ key: f.to, at: f.at + dur });
       this.pulseUntil = Math.max(this.pulseUntil, f.at + dur * 1.25);
@@ -518,21 +569,118 @@ export class ConstellationEngine {
   }
 
   protected applyCamera() {
-    const cp = Math.cos(this.pitch);
-    this.camera.position.set(Math.sin(this.yaw) * cp * this.dist, Math.sin(this.pitch) * this.dist, Math.cos(this.yaw) * cp * this.dist);
+    const { yaw, pitch, dist } = this.orbit.cur;
+    const cp = Math.cos(pitch);
+    this.camera.position.set(Math.sin(yaw) * cp * dist, Math.sin(pitch) * dist, Math.cos(yaw) * cp * dist);
     this.camera.lookAt(0, 0, 0);
     this.camera.updateMatrixWorld();
     // view-space z of the shell centre, for back-hemisphere fades
-    const cz = -this.dist;
+    const cz = -dist;
     this.nodeMat.uniforms.uCenterZ.value = cz;
     this.nodeMat.uniforms.uRefDist.value = this.homeDist;
   }
 
-  /** Subclass hook: camera easing / drift. Returns true while the camera moves. */
-  protected stepCamera(dt: number): boolean { void dt; return false; }
+  /** Camera easing / damping. Returns true while the camera moves. */
+  protected stepCamera(dt: number): boolean {
+    return this.orbit.step(dt, this.time);
+  }
 
-  /** Subclass hook: per-frame work after the camera moved (labels). */
-  protected afterFrame(cameraMoved: boolean): void { void cameraMoved; }
+  /** Labels follow the camera or the data; skipped on pulse-only frames. */
+  protected afterFrame(): void {
+    if (this.poseChanged() || this.labelsDirty) {
+      this.labelsDirty = false;
+      this.layoutLabels();
+    }
+  }
+
+  private poseChanged(): boolean {
+    const p = this.camera.position;
+    const now = [p.x, p.y, p.z, this.width, this.height];
+    const k = this.poseKey;
+    let changed = k.length !== now.length;
+    if (!changed) for (let i = 0; i < now.length; i++) if (k[i] !== now[i]) { changed = true; break; }
+    if (changed) this.poseKey = now;
+    return changed;
+  }
+
+  /** CSS px of a world point; NaN when behind the camera. */
+  private project(x: number, y: number, z: number): [number, number] {
+    const v = this.tmpV.set(x, y, z).project(this.camera);
+    if (!(v.z > -1 && v.z < 1)) return [NaN, NaN];
+    return [(v.x + 1) * 0.5 * this.width, (1 - v.y) * 0.5 * this.height];
+  }
+
+  private camDir(): Vec3 {
+    const p = this.camera.position;
+    const l = Math.hypot(p.x, p.y, p.z) || 1;
+    return [p.x / l, p.y / l, p.z / l];
+  }
+
+  private screenNodes(): ScreenNode[] {
+    const byKey = new Map(this.graph?.nodes.map(n => [n.key, n]) ?? []);
+    const cd = this.camDir();
+    return this.order.map(key => {
+      const r = this.rt.get(key)!;
+      const [x, y] = this.project(r.dir[0] * SHELL_R, r.dir[1] * SHELL_R, r.dir[2] * SHELL_R);
+      const d = r.dir[0] * cd[0] + r.dir[1] * cd[1] + r.dir[2] * cd[2];
+      const n = byKey.get(key);
+      return { x, y, r: nodeSizePx(n?.activity ?? 0) / 2, visible: !this.isHidden(key) && !backside(d) };
+    });
+  }
+
+  private layoutLabels() {
+    const g = this.graph;
+    if (!g) return;
+    const keys = chooseLabels(this.order, this.view.selected, this.hovered);
+    const cd = this.camDir();
+    const byKey = new Map(g.nodes.map(n => [n.key, n]));
+    const items: LabelItem[] = keys.map(key => {
+      const r = this.rt.get(key)!;
+      const n = byKey.get(key)!;
+      const d = r.dir[0] * cd[0] + r.dir[1] * cd[1] + r.dir[2] * cd[2];
+      const [x, y] = backside(d) || this.isHidden(key) ? [NaN, NaN] : this.project(r.dir[0] * SHELL_R, r.dir[1] * SHELL_R, r.dir[2] * SHELL_R);
+      const hex = n.kind === 'node' ? NODE_COLOR : oracleColor(key);
+      return {
+        key,
+        text: n.kind === 'node' ? `${n.label} · node` : n.label,
+        color: `${hex}cc`,
+        x,
+        y: y - nodeSizePx(n.activity) / 2 - 4,
+        priority: labelPriority(key, this.order.indexOf(key), this.view.selected, this.hovered),
+      };
+    });
+    this.labels.update(items, this.width, this.height);
+  }
+
+  private onTap = (x: number, y: number) => {
+    const i = pickNode(x, y, this.screenNodes());
+    this.cb.onSelect(i >= 0 ? this.order[i] : null);
+  };
+
+  private onHoverAt = (x: number, y: number) => {
+    let h: HoverInfo | null = null;
+    if (Number.isFinite(x)) {
+      const i = pickNode(x, y, this.screenNodes());
+      if (i >= 0) h = { kind: 'node', key: this.order[i], x, y };
+      else {
+        const samples = this.edgeList.map(e => {
+          const [from, to, ctrl] = this.curveOf(e.a, e.b);
+          return bezierSamples(from, ctrl, to).map(p => this.project(p[0], p[1], p[2]));
+        });
+        const j = pickEdge(x, y, samples);
+        if (j >= 0) h = { kind: 'edge', key: this.edgeList[j].key, x, y };
+      }
+    }
+    const nodeKey = h?.kind === 'node' ? h.key : null;
+    if (nodeKey !== this.hovered) { this.hovered = nodeKey; this.labelsDirty = true; this.requestRender(); }
+    this.renderer.domElement.style.cursor = h ? 'pointer' : 'grab';
+    this.cb.onHover(h);
+  };
+
+  private onInput = () => {
+    this.lastInputAt = performance.now();
+    this.finishIntro();
+  };
 
   /** A pulse head, a pending arrival or a flash ring is on screen. */
   protected pulsesLive(): boolean {
@@ -572,9 +720,10 @@ export class ConstellationEngine {
       width: this.width,
       height: this.height,
       pixelRatio: this.pixelRatio,
-      centerZ: -this.dist,
+      centerZ: -this.orbit.cur.dist,
     });
-    this.afterFrame(easing || slerp);
+    if (slerp) this.labelsDirty = true;
+    this.afterFrame();
 
     this.renderer.render(this.scene, this.camera);
     this.framesRendered++;
@@ -617,14 +766,14 @@ export class ConstellationEngine {
     const h = Math.max(1, this.container.clientHeight);
     const pr = cappedPixelRatio();
     if (w === this.width && h === this.height && pr === this.pixelRatio) return;
-    const wasHome = Math.abs(this.dist - this.homeDist) < 1e-3;
     this.width = w; this.height = h; this.pixelRatio = pr;
     this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.homeDist = this.fitDistance();
-    if (wasHome) this.dist = this.homeDist;
+    this.orbit.setHome({ ...HOME, dist: this.homeDist });
+    this.labelsDirty = true;
     this.starMat.uniforms.uPixelRatio.value = pr;
     this.nodeMat.uniforms.uPixelRatio.value = pr;
     this.onResized();
