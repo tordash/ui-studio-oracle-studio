@@ -11,7 +11,7 @@ export const TYPE_COLORS: Record<string, string> = {
 };
 
 /** Unknown / missing type. */
-export const TYPE_COLOR_FALLBACK = '#888';
+export const TYPE_COLOR_FALLBACK = '#888888';
 
 export function getTypeColor(type: string | null | undefined): string {
   return (type && TYPE_COLORS[type]) || TYPE_COLOR_FALLBACK;
