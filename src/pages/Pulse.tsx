@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getFeed } from '../api/oracle';
 import type { FeedEvent } from '../api/oracle';
+import { pairEvents } from '../lib/pulse/stream';
+import type { CollapsedGroup } from '../lib/pulse/stream';
 
 const MAW_BASE = `http://${window.location.hostname}:3456`;
 
@@ -47,112 +49,6 @@ function relativeTime(ts: string): string {
   if (diffS < 3600) return `${Math.floor(diffS / 60)}m`;
   if (diffS < 86400) return `${Math.floor(diffS / 3600)}h`;
   return `${Math.floor(diffS / 86400)}d`;
-}
-
-function parseTs(ts: string): number {
-  return new Date(ts.replace(' ', 'T')).getTime();
-}
-
-/** Shorten file paths and bash commands for display */
-function shortenMsg(msg: string): string {
-  // Shorten absolute paths: keep last 2 segments
-  return msg.replace(/\/(?:home\/\w+\/)?(?:Code\/)?(?:github\.com\/)?[\w-]+\/[\w-]+\/([\w/.@-]+)/g, (_, rest) => {
-    const parts = rest.split('/');
-    return parts.length > 2 ? '.../' + parts.slice(-2).join('/') : rest;
-  }).replace(/cd\s+~\/Code\/github\.com\/[\w-]+\/[\w-]+\s*&&\s*/g, '');
-}
-
-interface CollapsedGroup {
-  placeholder: FeedEvent;
-  hidden: FeedEvent[];
-}
-
-/** Merge PostToolUse into PreToolUse as duration, drop noise, collapse repeats */
-function pairEvents(events: FeedEvent[]): { events: FeedEvent[]; collapsedGroups: Map<number, CollapsedGroup> } {
-  const result: FeedEvent[] = [];
-  const pendingPre = new Map<string, number>();
-
-  // Events are newest-first, iterate reverse (oldest first) to pair
-  const reversed = [...events].reverse();
-  for (const ev of reversed) {
-    const key = `${ev.session_id}:${ev.oracle}`;
-
-    if (ev.event === 'PreToolUse') {
-      result.push({ ...ev, message: shortenMsg(ev.message) });
-      pendingPre.set(key, result.length - 1);
-    } else if (ev.event === 'PostToolUse' || ev.event === 'PostToolUseFailure') {
-      const preIdx = pendingPre.get(key);
-      if (preIdx !== undefined) {
-        const pre = result[preIdx];
-        const durationMs = parseTs(ev.timestamp) - parseTs(pre.timestamp);
-        if (durationMs > 0 && durationMs < 300_000) {
-          const durLabel = durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`;
-          result[preIdx] = {
-            ...pre,
-            event: ev.event === 'PostToolUseFailure' ? 'ToolFailed' : 'ToolDone',
-            session_id: pre.session_id + '|' + durLabel,
-          };
-        }
-        pendingPre.delete(key);
-      }
-    } else {
-      result.push({ ...ev, message: shortenMsg(ev.message) });
-      pendingPre.delete(key);
-    }
-  }
-
-  result.reverse();
-
-  // Collapse consecutive same-tool events from same oracle (e.g. 8x Edit → "Edit x8")
-  const collapsed: FeedEvent[] = [];
-  for (let i = 0; i < result.length; i++) {
-    const ev = result[i];
-    const tool = ev.message.split(':')[0];
-    // Count consecutive same oracle + same tool
-    let count = 1;
-    while (
-      i + count < result.length &&
-      result[i + count].oracle === ev.oracle &&
-      result[i + count].message.split(':')[0] === tool &&
-      (result[i + count].event === ev.event || result[i + count].event === 'ToolDone' || result[i + count].event === 'PreToolUse')
-    ) {
-      count++;
-    }
-
-    if (count >= 3) {
-      // Collapse: show first, skip middle, show last
-      collapsed.push(ev);
-      const last = result[i + count - 1];
-      if (count > 2) {
-        const hidden = result.slice(i + 1, i + count - 1).map(e => ({ ...e, message: shortenMsg(e.message) }));
-        const placeholder = {
-          ...ev,
-          event: 'Collapsed',
-          message: `... ${count - 2} more ${tool} calls`,
-          session_id: ev.session_id,
-          _hidden: hidden,
-        } as FeedEvent & { _hidden: FeedEvent[] };
-        collapsed.push(placeholder);
-      }
-      if (count > 1) collapsed.push(last);
-      i += count - 1;
-    } else {
-      collapsed.push(ev);
-    }
-  }
-
-  // Build a map of collapsed placeholder index → hidden events
-  const collapsedGroups = new Map<number, CollapsedGroup>();
-  for (let i = 0; i < collapsed.length; i++) {
-    if (collapsed[i].event === 'Collapsed' && (collapsed[i] as any)._hidden) {
-      collapsedGroups.set(i, {
-        placeholder: collapsed[i],
-        hidden: (collapsed[i] as any)._hidden,
-      });
-    }
-  }
-
-  return { events: collapsed, collapsedGroups };
 }
 
 const MSG_TRUNCATE = 120;

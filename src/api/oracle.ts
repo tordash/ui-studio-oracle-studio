@@ -297,6 +297,8 @@ export interface FeedEvent {
   project: string;
   session_id: string;
   message: string;
+  /** emitter, e.g. 'maw-js' */
+  source?: string;
 }
 
 export interface FeedResponse {
@@ -305,14 +307,14 @@ export interface FeedResponse {
   active_oracles: string[];
 }
 
-export async function getFeed(opts?: { limit?: number; oracle?: string; event?: string; since?: string }): Promise<FeedResponse> {
+export async function getFeed(opts?: { limit?: number; oracle?: string; event?: string; since?: string; signal?: AbortSignal }): Promise<FeedResponse> {
   const params = new URLSearchParams();
   if (opts?.limit) params.set('limit', String(opts.limit));
   if (opts?.oracle) params.set('oracle', opts.oracle);
   if (opts?.event) params.set('event', opts.event);
   if (opts?.since) params.set('since', opts.since);
-  const res = await fetch(`${API_BASE}/feed?${params}`);
-  return res.json();
+  const res = await fetch(`${API_BASE}/feed?${params}`, { signal: opts?.signal });
+  return okJson(res);
 }
 
 // ============================================================================
