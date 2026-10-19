@@ -49,12 +49,12 @@ function MessageCell({ text, className }: { text: string; className: string }) {
   const isLong = text.length > MSG_TRUNCATE;
 
   if (!isLong) {
-    return <span className={`text-sm font-mono leading-relaxed min-w-0 ${className}`}>{text}</span>;
+    return <span className={`text-sm font-mono leading-relaxed min-w-0 [overflow-wrap:anywhere] ${className}`}>{text}</span>;
   }
 
   return (
     <span
-      className={`text-sm font-mono leading-relaxed min-w-0 cursor-pointer ${className}`}
+      className={`text-sm font-mono leading-relaxed min-w-0 [overflow-wrap:anywhere] cursor-pointer ${className}`}
       onClick={() => setExpanded(!expanded)}
     >
       {expanded ? text : text.slice(0, MSG_TRUNCATE) + '...'}

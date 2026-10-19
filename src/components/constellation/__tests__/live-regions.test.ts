@@ -24,3 +24,17 @@ describe('Pulse page live regions', () => {
     expect(live).toEqual(['LiveDot.tsx']);
   });
 });
+
+describe('Pulse stream MessageCell wraps long tokens (T16 #14)', () => {
+  const pulse = readFileSync(join(dir, '../../pages/Pulse.tsx'), 'utf8');
+  const cell = pulse.slice(pulse.indexOf('function MessageCell'), pulse.indexOf('interface TmuxWindow'));
+
+  it('both message spans carry [overflow-wrap:anywhere] next to min-w-0', () => {
+    const spans = cell.match(/className=\{`text-sm font-mono[^`]*`\}/g) ?? [];
+    expect(spans).toHaveLength(2);
+    for (const s of spans) {
+      expect(s).toContain('[overflow-wrap:anywhere]');
+      expect(s).toContain('min-w-0');
+    }
+  });
+});
