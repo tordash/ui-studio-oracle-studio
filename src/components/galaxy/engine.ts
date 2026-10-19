@@ -21,6 +21,7 @@ import { ScreenGrid, projectPoints } from '../../lib/galaxy/pick-grid';
 import { mulberry32 } from '../../lib/galaxy/clusters';
 import { frameBounds, frameDistance } from '../../lib/galaxy/frame';
 import { declutterLabels } from '../../lib/galaxy/labels';
+import { bindRenderGate, cappedPixelRatio, GLOW_POINT_FRAG } from '../../lib/three';
 
 /** Thai-capable system font stack — no webfont, so canvas labels never race a font load. */
 export const GALAXY_FONT_STACK =
@@ -31,31 +32,6 @@ const STAR_WORLD_SIZE = 0.17;
 const MIN_DIST = 1.6;
 const MAX_DIST = 90;
 const BACKDROP_COUNT = 1400;
-
-export function webglAvailable(): boolean {
-  try {
-    const c = document.createElement('canvas');
-    const gl = (c.getContext('webgl2') || c.getContext('webgl')) as WebGLRenderingContext | null;
-    if (!gl) return false;
-    // free the probe context right away — iOS Safari caps live WebGL contexts
-    gl.getExtension('WEBGL_lose_context')?.loseContext();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function isPhoneLike(): boolean {
-  if (typeof window === 'undefined') return false;
-  const coarse = window.matchMedia?.('(pointer: coarse)').matches ?? false;
-  const short = Math.min(window.screen?.width ?? 9999, window.screen?.height ?? 9999);
-  return coarse && short <= 820;
-}
-
-/** DPR cap: 2 on desktop, 1.5 on phones (shared mobile budget). */
-export function cappedPixelRatio(): number {
-  return Math.min(window.devicePixelRatio || 1, isPhoneLike() ? 1.5 : 2);
-}
 
 // ── Shaders ─────────────────────────────────────────────────────────────
 
@@ -99,21 +75,6 @@ const STAR_VERT = /* glsl */ `
     vColor = aColor;
     vAlpha = alpha * uIntro;
     vHot = hot;
-  }
-`;
-
-const STAR_FRAG = /* glsl */ `
-  varying vec3 vColor;
-  varying float vAlpha;
-  varying float vHot;
-  void main() {
-    float d = length(gl_PointCoord - 0.5) * 2.0;   // 0 centre → 1 edge
-    if (d > 1.0) discard;
-    float core = smoothstep(0.42, 0.0, d);
-    float glow = pow(1.0 - d, 2.4) * (0.5 + 0.6 * vHot);
-    float a = (core * 0.9 + glow) * vAlpha * 0.78;
-    vec3 col = mix(vColor, vec3(1.0), core * (0.45 + 0.35 * vHot));
-    gl_FragColor = vec4(col, a);
   }
 `;
 
@@ -345,7 +306,7 @@ export class GalaxyEngine {
   private down = { x: 0, y: 0, yaw: 0, pitch: 0, dragged: false, multi: false };
   private pinch = { d0: 1, dist0: 26 };
 
-  private io: IntersectionObserver | null = null;
+  private unbindGate: (() => void) | null = null;
   private ro: ResizeObserver | null = null;
 
   constructor(container: HTMLElement, data: GalaxyData, clusters: GalaxyCluster[], cb: GalaxyEngineCallbacks, reducedMotion: boolean) {
@@ -388,7 +349,7 @@ export class GalaxyEngine {
     geo.computeBoundingSphere();
     this.starMat = new THREE.ShaderMaterial({
       vertexShader: STAR_VERT,
-      fragmentShader: STAR_FRAG,
+      fragmentShader: GLOW_POINT_FRAG,
       uniforms: {
         uTime: { value: 0 },
         uPixelRatio: { value: this.pixelRatio },
@@ -914,9 +875,15 @@ export class GalaxyEngine {
     this.cb.onContextLost();
   };
 
-  private onVisibility = () => {
-    this.visible = !document.hidden;
+  private onVisibility = (visible: boolean) => {
+    this.visible = visible;
     if (this.visible) this.requestRender();
+    else if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
+  };
+
+  private onScreenChange = (onScreen: boolean) => {
+    this.onScreen = onScreen;
+    if (this.onScreen) this.requestRender();
     else if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
   };
 
@@ -946,22 +913,13 @@ export class GalaxyEngine {
     c.addEventListener('pointerleave', this.onPointerLeave);
     c.addEventListener('wheel', this.onWheel, { passive: false });
     c.addEventListener('webglcontextlost', this.onContextLost);
-    document.addEventListener('visibilitychange', this.onVisibility);
     if (typeof ResizeObserver !== 'undefined') {
       this.ro = new ResizeObserver(this.onResize);
       this.ro.observe(this.container);
     } else {
       window.addEventListener('resize', this.onResize);
     }
-    if (typeof IntersectionObserver !== 'undefined') {
-      this.io = new IntersectionObserver(entries => {
-        const e = entries[entries.length - 1];
-        this.onScreen = !!e && e.isIntersecting;
-        if (this.onScreen) this.requestRender();
-        else if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
-      });
-      this.io.observe(this.container);
-    }
+    this.unbindGate = bindRenderGate(this.container, { onVisibility: this.onVisibility, onScreen: this.onScreenChange });
   }
 
   private unbindEvents() {
@@ -973,12 +931,11 @@ export class GalaxyEngine {
     c.removeEventListener('pointerleave', this.onPointerLeave);
     c.removeEventListener('wheel', this.onWheel);
     c.removeEventListener('webglcontextlost', this.onContextLost);
-    document.removeEventListener('visibilitychange', this.onVisibility);
     window.removeEventListener('resize', this.onResize);
     this.ro?.disconnect();
-    this.io?.disconnect();
+    this.unbindGate?.();
     this.ro = null;
-    this.io = null;
+    this.unbindGate = null;
   }
 
   // ── verify hooks for the gated browser batch ──

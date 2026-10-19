@@ -10,20 +10,14 @@ import { buildClusters } from '../lib/galaxy/clusters';
 import { GalaxyView } from '../components/galaxy/GalaxyView';
 import { GalaxyFallback } from '../components/galaxy/GalaxyFallback';
 import { DocSheet } from '../components/galaxy/DocSheet';
-import { GALAXY_FONT_STACK, webglAvailable } from '../components/galaxy/engine';
+import { GALAXY_FONT_STACK } from '../components/galaxy/engine';
 import type { GalaxyEngine } from '../components/galaxy/engine';
+import { getReducedMotion, subscribeReducedMotion, webglAvailable } from '../lib/three';
 
 const DEFAULT_ENGINE = 'bge-m3';
 const SEARCH_LIMIT = 100;
 
 interface PcaInfo { variance_explained?: number[]; n_vectors?: number; computed_at?: string }
-
-function subscribeReducedMotion(cb: () => void) {
-  const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-  mq.addEventListener('change', cb);
-  return () => mq.removeEventListener('change', cb);
-}
-const getReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // The global nav wraps (~64 px desktop, ~124 px at 390), so the page measures where it starts
 // instead of assuming a header height, and fills the rest of the dynamic viewport (iOS bars).
