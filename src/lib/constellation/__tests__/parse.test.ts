@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import type { FeedEvent } from '../../../api/oracle';
-import { parseFeedEvent, newParseStats, dedupeKey, fnv1a, oracleKey } from '../parse';
+import { parseFeedEvent, newParseStats, dedupeKey, fnv1a, oracleKey, recipientOf } from '../parse';
 
 // Synthetic fixtures only — never real feed text.
 const ev = (o: Partial<FeedEvent> = {}): FeedEvent => ({
@@ -112,5 +112,13 @@ describe('dedupe key', () => {
     expect(fnv1a('')).toBe('811c9dc5');
     expect(fnv1a('a')).toBe('e40c292c');
     expect(fnv1a('foobar')).toBe('bf9cf968');
+  });
+});
+
+describe('recipientOf', () => {
+  it('returns the prefix target with its casing, or null', () => {
+    expect(recipientOf('mac-tor:HeLm: [mac-tor:SomTor] synthetic')).toBe('HeLm');
+    expect(recipientOf('synthetic without prefix')).toBeNull();
+    expect(recipientOf('')).toBeNull();
   });
 });

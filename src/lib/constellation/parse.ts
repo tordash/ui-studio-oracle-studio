@@ -55,7 +55,12 @@ export function fnv1a(s: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
-export const dedupeKey = (e: FeedEvent) => `${e.timestamp}|${e.oracle}|${fnv1a(e.message ?? '')}`;
+/** Prefix target as written (for the stream list's from → to chip), or null. */
+export function recipientOf(message: string): string | null {
+  return PREFIX.exec(message ?? '')?.[2] ?? null;
+}
+
+export const dedupeKey =(e: FeedEvent) => `${e.timestamp}|${e.oracle}|${fnv1a(e.message ?? '')}`;
 
 function label(labels: Map<string, string>, key: string, raw: string): string {
   const seen = labels.get(key);
