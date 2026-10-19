@@ -69,7 +69,8 @@ export function ConstellationCanvas({ graph, view, batch, reducedMotion, onConte
     engineRef.current?.setReducedMotion(reducedMotion);
   }, [reducedMotion]);
 
-  return <div ref={hostRef} className={`relative ${className ?? ''}`} />;
+  // the host must be positioned: the DOM label pool is absolutely placed inside it
+  return <div ref={hostRef} className={className ?? 'relative'} />;
 }
 
 export default ConstellationCanvas;

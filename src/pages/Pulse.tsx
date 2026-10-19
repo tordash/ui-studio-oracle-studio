@@ -6,6 +6,7 @@ import { recipientOf } from '../lib/constellation/parse';
 import { canUseTerminal } from '../lib/constellation/terminal-gate';
 import { useFeedPoll } from '../hooks/useFeedPoll';
 import { LiveDot } from '../components/constellation/LiveDot';
+import { Constellation } from '../components/constellation/Constellation';
 
 const MAW_BASE = `http://${window.location.hostname}:3456`;
 /** maw :3456 (sessions, capture, send → tmux) only on localhost with no remote ?host= (C-D4). */
@@ -313,6 +314,9 @@ export function Pulse() {
 
   return (
     <div className="min-h-[calc(100vh-64px)] bg-[#0a0a0f]">
+      {/* Fleet Constellation hero — same poller as the stream below */}
+      <Constellation feed={feed} />
+
       {/* Active Oracles bar */}
       <div className="border-b border-white/[0.06] px-6 py-5">
         <div className="max-w-[960px] mx-auto">
