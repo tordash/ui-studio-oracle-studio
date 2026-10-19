@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { introState, igniteProgress, driftOn, INTRO_FROM, INTRO_END_S, DRIFT_IDLE_MS, DRIFT_RAD_S } from '../intro';
+import { introState, igniteProgress, driftOn, shouldStartIntro, INTRO_FROM, INTRO_END_S, DRIFT_IDLE_MS, DRIFT_RAD_S } from '../intro';
 
 const HOME = { yaw: 0, pitch: 0.18, dist: 24 };
 
@@ -75,5 +75,16 @@ describe('driftOn (C-D8)', () => {
     expect(driftOn(7999, false, false)).toBe(false);
     expect(driftOn(60_000, true, false)).toBe(false);
     expect(driftOn(60_000, false, true)).toBe(false);
+  });
+});
+
+describe('shouldStartIntro (review r1 #2: first NON-empty graph)', () => {
+  it('starts on the first graph that has nodes, even after empty graphs', () => {
+    expect(shouldStartIntro(false, 0, false)).toBe(false);
+    expect(shouldStartIntro(false, 3, false)).toBe(true);
+  });
+  it('never twice, never under reduced motion', () => {
+    expect(shouldStartIntro(true, 3, false)).toBe(false);
+    expect(shouldStartIntro(false, 3, true)).toBe(false);
   });
 });

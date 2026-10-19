@@ -21,6 +21,8 @@ export const FEED_LIMIT = 100;
 export const PRUNE_AGE_MS = 24 * 3600 * 1000;
 export const PRUNE_MAX = 3000;
 const BACKOFF_MS = [10_000, 10_000, 20_000, 40_000, 60_000];
+/** a request that hangs longer than this is aborted and counted as a failure */
+export const FETCH_TIMEOUT_MS = 8000;
 
 export type LiveState = 'live' | 'stale' | 'offline' | 'paused';
 
@@ -42,6 +44,45 @@ export function liveLabel(state: LiveState, now: number, lastOkAt: number | null
     case 'live': return `live · ${ago}`;
     default: return ago ?? 'connecting…';
   }
+}
+
+/** Screen-reader text: the state only, so the live region speaks on change, not every second. */
+export function liveAnnouncement(state: LiveState): string {
+  switch (state) {
+    case 'live': return 'Feed live';
+    case 'stale': return 'Feed delayed';
+    case 'offline': return 'Feed offline';
+    default: return 'Feed paused';
+  }
+}
+
+/**
+ * A failed poll: 'error' → back off and retry; 'ignore' → an intentional
+ * abort (tab hidden, a newer poll took over) or the hook unmounted. A timeout
+ * is an abort too, but it must count as an error or polling would stop.
+ */
+export function failureKind({ alive, aborted, timedOut }: { alive: boolean; aborted: boolean; timedOut: boolean }): 'error' | 'ignore' {
+  if (!alive) return 'ignore';
+  if (timedOut) return 'error';
+  return aborted ? 'ignore' : 'error';
+}
+
+export interface FeedMeta {
+  total: number;
+  activeOracles: string[];
+}
+
+/**
+ * The server computes `total` and `active_oracles` after its `since` filter,
+ * so an incremental response only describes the delta. Take both from full
+ * fetches; on a since-poll add only the raw events that are new to us.
+ */
+export function mergeMeta(prev: FeedMeta, res: { total?: number; active_oracles?: string[] }, full: boolean, newRaw: readonly FeedEvent[]): FeedMeta {
+  if (full) return { total: res.total ?? 0, activeOracles: [...(res.active_oracles ?? [])] };
+  if (newRaw.length === 0) return prev;
+  const active = [...prev.activeOracles];
+  for (const e of newRaw) if (e.oracle && !active.includes(e.oracle)) active.push(e.oracle);
+  return { total: prev.total + newRaw.length, activeOracles: active };
 }
 
 /** Delay before the next poll after `failures` consecutive errors (0 = healthy cadence). */

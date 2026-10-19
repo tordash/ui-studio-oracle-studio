@@ -8,13 +8,14 @@
 // keep going, and the held-back batch is applied on unfreeze.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getFeed } from '../api/oracle';
+import { ApiError, getFeed } from '../api/oracle';
 import type { FeedEvent } from '../api/oracle';
 import type { ParsedMsg, ParseStats } from '../lib/constellation/parse';
 import { dedupeKey, newParseStats } from '../lib/constellation/parse';
 import {
-  FEED_LIMIT, POLL_MS, heldMsgs, mergeFeed, newFeedStore, nextDelay, oldestHeld, sinceParam,
+  FEED_LIMIT, FETCH_TIMEOUT_MS, POLL_MS, failureKind, heldMsgs, mergeFeed, mergeMeta, newFeedStore, nextDelay, oldestHeld, sinceParam,
 } from '../lib/constellation/poll-state';
+import type { FeedMeta } from '../lib/constellation/poll-state';
 
 /** raw events kept for the stream list (all event types, newest first) */
 const RAW_MAX = 300;
@@ -62,7 +63,7 @@ const EMPTY: FeedSnapshot = {
 export function useFeedPoll({ intervalMs = POLL_MS }: { intervalMs?: number } = {}): FeedPoll {
   const storeRef = useRef(newFeedStore());
   const rawRef = useRef(new Map<string, FeedEvent>());
-  const metaRef = useRef({ total: 0, activeOracles: [] as string[] });
+  const metaRef = useRef<FeedMeta>({ total: 0, activeOracles: [] });
   const seqRef = useRef(0);
   const frozenRef = useRef(false);
   const heldBackRef = useRef<ParsedMsg[]>([]);
@@ -115,13 +116,20 @@ export function useFeedPoll({ intervalMs = POLL_MS }: { intervalMs?: number } = 
       return Date.now() + ms;
     };
 
-    const keepRaw = (events: readonly FeedEvent[]) => {
+    /** Returns the events that were new to the list. */
+    const keepRaw = (events: readonly FeedEvent[]): FeedEvent[] => {
       const raw = rawRef.current;
-      for (const e of events) raw.set(dedupeKey(e), e);
+      const fresh: FeedEvent[] = [];
+      for (const e of events) {
+        const k = dedupeKey(e);
+        if (!raw.has(k)) fresh.push(e);
+        raw.set(k, e);
+      }
       if (raw.size > RAW_MAX) {
         const old = [...raw.entries()].sort((a, b) => Date.parse(a[1].timestamp) - Date.parse(b[1].timestamp)).slice(0, raw.size - RAW_MAX);
         for (const [k] of old) raw.delete(k);
       }
+      return fresh;
     };
 
     async function poll(forceFull: boolean): Promise<void> {
@@ -133,13 +141,17 @@ export function useFeedPoll({ intervalMs = POLL_MS }: { intervalMs?: number } = 
       const st = storeRef.current;
       const since = sinceParam(st);
       const full = forceFull || first || !since;
+      // a hung request must not stop polling: abort it and count it as a failure
+      let timedOut = false;
+      const watchdog = setTimeout(() => { timedOut = true; ctl.abort(); }, FETCH_TIMEOUT_MS);
       try {
         const res = await getFeed(full ? { limit: FEED_LIMIT, signal: ctl.signal } : { limit: FEED_LIMIT, since, signal: ctl.signal });
         if (!alive || ctl.signal.aborted) return;
         const now = Date.now();
         const r = mergeFeed(st, res.events ?? [], { full, now });
-        keepRaw(res.events ?? []);
-        metaRef.current = { total: res.total ?? 0, activeOracles: res.active_oracles ?? [] };
+        const fresh = keepRaw(res.events ?? []);
+        // since-polls: the server's total / active_oracles cover the delta only
+        metaRef.current = mergeMeta(metaRef.current, res, full, fresh);
         failures = 0;
         const mode: BatchMode = first ? 'first' : catchUp ? 'catchup' : 'live';
         first = false;
@@ -148,11 +160,15 @@ export function useFeedPoll({ intervalMs = POLL_MS }: { intervalMs?: number } = 
         if (r.refetchFull) { void poll(true); return; }
         const nextAt = schedule(intervalMs);
         setNet({ lastOkAt: now, lastErr: false, nextAt });
-      } catch {
-        if (!alive || ctl.signal.aborted) return;
+      } catch (e) {
+        if (failureKind({ alive, aborted: ctl.signal.aborted, timedOut }) === 'ignore') return;
+        // network errors are TypeError, HTTP errors ApiError: anything else is a bug, not an outage
+        if (!timedOut && !(e instanceof ApiError) && !(e instanceof TypeError)) console.error('useFeedPoll: poll failed', e);
         failures++;
         const nextAt = schedule(nextDelay(failures));
         setNet(n => ({ ...n, lastErr: true, nextAt }));
+      } finally {
+        clearTimeout(watchdog);
       }
     }
 

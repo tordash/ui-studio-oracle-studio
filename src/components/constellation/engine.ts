@@ -37,7 +37,7 @@ import { DomLabelPool } from './labels';
 import type { LabelItem } from './labels';
 import { chooseLabels, labelPriority, backside } from '../../lib/constellation/label-pool';
 import { pickNode, pickEdge, bezierSamples } from '../../lib/constellation/pick';
-import { introState, igniteStagger, driftOn, DRIFT_RAD_S, INTRO_END_S, REPLAY_START_S } from '../../lib/constellation/intro';
+import { introState, igniteStagger, driftOn, shouldStartIntro, DRIFT_RAD_S, INTRO_END_S, REPLAY_START_S } from '../../lib/constellation/intro';
 import type { ScreenNode } from '../../lib/constellation/pick';
 
 const FOV = 50;
@@ -156,6 +156,7 @@ export class ConstellationEngine {
   protected time = UTIME_START;
   protected introT = 0;
   protected introOn = false;
+  private introPlayed = false;
   private visible = !document.hidden;
   private pageShown = true;
   private onScreen = true;
@@ -294,7 +295,9 @@ export class ConstellationEngine {
   isPhone(): boolean { return this.phone; }
 
   setGraph(graph: Graph) {
-    const first = !this.graph && graph.nodes.length > 0;
+    // the first graph is often empty (SPA revisit: the canvas mounts before the feed answers)
+    const startIntro = shouldStartIntro(this.introPlayed, graph.nodes.length, this.reduced);
+    if (graph.nodes.length > 0) this.introPlayed = true;
     this.graph = graph;
     const ranking = graph.nodes
       .map(n => ({ key: n.key, score: rankScore(n.activity, n.heat) }))
@@ -316,7 +319,7 @@ export class ConstellationEngine {
       }
     }
     this.order = graph.nodes.filter(n => st.assign.has(n.key)).slice(0, MAX_NODES).map(n => n.key);
-    if (first) this.startIntro();
+    if (startIntro) this.startIntro();
     this.writeNodes();
     this.writeRibbons();
     this.requestRender();

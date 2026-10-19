@@ -160,6 +160,9 @@ export class RibbonLayer {
 
   private allocate(capacity: number) {
     const old = this.arrays;
+    // growing: free the old GL buffers (replaced attributes are otherwise orphaned until context loss);
+    // three re-uploads the geometry on the next render
+    if (this.capacity > 0) this.geometry.dispose();
     this.capacity = capacity;
     for (const [name, k] of INSTANCE_LAYOUT) {
       const arr = new Float32Array(capacity * k);

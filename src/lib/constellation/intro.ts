@@ -66,6 +66,11 @@ export function igniteProgress(t: number, rank: number, n: number, reduced: bool
   return x <= 0 ? 0 : easeOutBack(x);
 }
 
+/** Play the intro once, on the first graph that has nodes (an empty first graph is normal on an SPA revisit). */
+export function shouldStartIntro(played: boolean, nodes: number, reduced: boolean): boolean {
+  return !played && nodes > 0 && !reduced;
+}
+
 export function driftOn(idleMs: number, selected: boolean, reduced: boolean): boolean {
   return idleMs >= DRIFT_IDLE_MS && !selected && !reduced;
 }

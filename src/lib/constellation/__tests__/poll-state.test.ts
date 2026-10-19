@@ -2,7 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import type { FeedEvent } from '../../../api/oracle';
 import {
   liveState, nextDelay, newFeedStore, mergeFeed, sinceParam, oldestHeld, heldMsgs, liveLabel,
-  POLL_MS, LIVE_MS, STALE_MS, FEED_LIMIT, PRUNE_AGE_MS, PRUNE_MAX,
+  mergeMeta, failureKind, liveAnnouncement,
+  POLL_MS, LIVE_MS, STALE_MS, FEED_LIMIT, PRUNE_AGE_MS, PRUNE_MAX, FETCH_TIMEOUT_MS,
 } from '../poll-state';
 
 const NOW = Date.UTC(2026, 9, 18, 15, 0, 0);
@@ -137,5 +138,55 @@ describe('mergeFeed', () => {
     const st = newFeedStore();
     mergeFeed(st, [ev(30, 1), ev(2, 2), ev(90, 3)], { full: true, now: NOW });
     expect(heldMsgs(st).map(m => m.body)).toEqual(['synthetic 2', 'synthetic 1', 'synthetic 3']);
+  });
+});
+
+describe('mergeMeta (review r1 #1: since-polls must not overwrite the full snapshot)', () => {
+  const full = { total: 100, active_oracles: ['helm', 'SomTor', 'ez'] };
+
+  it('a full fetch replaces total and active oracles', () => {
+    expect(mergeMeta({ total: 3, activeOracles: ['x'] }, full, true, [])).toEqual({ total: 100, activeOracles: ['helm', 'SomTor', 'ez'] });
+  });
+
+  it('an incremental response (server totals cover the delta only) keeps the snapshot and adds only new events', () => {
+    const prev = mergeMeta({ total: 0, activeOracles: [] }, full, true, []);
+    const delta = { total: 1, active_oracles: ['forge'] };
+    const r = mergeMeta(prev, delta, false, [ev(0, 1, { oracle: 'forge' }), ev(0, 2, { oracle: 'helm' })]);
+    expect(r.total).toBe(102);
+    expect(r.activeOracles).toEqual(['helm', 'SomTor', 'ez', 'forge']);
+  });
+
+  it('an incremental response with only the re-sent boundary event changes nothing', () => {
+    const prev = { total: 100, activeOracles: ['helm'] };
+    expect(mergeMeta(prev, { total: 1, active_oracles: ['helm'] }, false, [])).toEqual(prev);
+  });
+
+  it('missing fields on a full fetch fall back to empty', () => {
+    expect(mergeMeta({ total: 9, activeOracles: ['a'] }, {}, true, [])).toEqual({ total: 0, activeOracles: [] });
+  });
+});
+
+describe('failureKind (review r1 #5: a hung request must not stop polling)', () => {
+  it('a timeout is an error (retry with backoff), not a silent abort', () => {
+    expect(FETCH_TIMEOUT_MS).toBe(8000);
+    expect(failureKind({ alive: true, aborted: true, timedOut: true })).toBe('error');
+  });
+  it('an abort for hidden tab / newer poll is ignored; unmounted is ignored', () => {
+    expect(failureKind({ alive: true, aborted: true, timedOut: false })).toBe('ignore');
+    expect(failureKind({ alive: false, aborted: false, timedOut: false })).toBe('ignore');
+    expect(failureKind({ alive: false, aborted: true, timedOut: true })).toBe('ignore');
+  });
+  it('anything else is an error', () => {
+    expect(failureKind({ alive: true, aborted: false, timedOut: false })).toBe('error');
+  });
+});
+
+describe('liveAnnouncement (review r1 #4: announce state changes, not the seconds)', () => {
+  it('one short phrase per state, no counters', () => {
+    expect(liveAnnouncement('live')).toBe('Feed live');
+    expect(liveAnnouncement('stale')).toBe('Feed delayed');
+    expect(liveAnnouncement('offline')).toBe('Feed offline');
+    expect(liveAnnouncement('paused')).toBe('Feed paused');
+    for (const s of ['live', 'stale', 'offline', 'paused'] as const) expect(liveAnnouncement(s)).not.toMatch(/\d/);
   });
 });

@@ -29,7 +29,7 @@ export function ConstellationHUD({ lastOkAt, lastErr, hidden, nextAt, w, onWindo
       <div className="min-w-0 flex flex-col gap-1.5">
         <div className="flex items-center gap-3 flex-wrap">
           <h2 className="text-[15px] sm:text-[17px] font-semibold tracking-[0.02em] text-white/90">Fleet Constellation</h2>
-          <LiveDot lastOkAt={lastOkAt} lastErr={lastErr} hidden={hidden} nextAt={nextAt} className="pointer-events-auto" />
+          <LiveDot lastOkAt={lastOkAt} lastErr={lastErr} hidden={hidden} nextAt={nextAt} announce className="pointer-events-auto" />
         </div>
         <p className="text-[12px] font-mono text-white/45 tabular-nums">
           {label}

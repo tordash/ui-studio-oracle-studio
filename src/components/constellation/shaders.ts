@@ -86,7 +86,9 @@ export const NODE_VERT = /* glsl */ `
     float t = clamp((uIntroT - 0.3 - uStagger * r) / 0.45, 0.0, 1.0);
     float c1 = 1.70158;
     float c3 = c1 + 1.0;
-    return 1.0 + c3 * pow(t - 1.0, 3.0) + c1 * pow(t - 1.0, 2.0);
+    // explicit products: GLSL pow is undefined for a negative base
+    float u = t - 1.0;
+    return 1.0 + c3 * u * u * u + c1 * u * u;
   }
   void main() {
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
