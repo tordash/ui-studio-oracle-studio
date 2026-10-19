@@ -37,6 +37,7 @@ import { DomLabelPool } from './labels';
 import type { LabelItem } from './labels';
 import { chooseLabels, labelPriority, backside } from '../../lib/constellation/label-pool';
 import { pickNode, pickEdge, bezierSamples } from '../../lib/constellation/pick';
+import { introState, igniteStagger, driftOn, DRIFT_RAD_S, INTRO_END_S, REPLAY_START_S } from '../../lib/constellation/intro';
 import type { ScreenNode } from '../../lib/constellation/pick';
 
 const FOV = 50;
@@ -46,8 +47,6 @@ const HOT_MS = 2 * 60_000;
 const DIM_UNFOCUSED = 0.2;
 const HOME = { dist: 24, yaw: 0, pitch: 0.18 };
 const FLASH_S = 0.4;
-/** intro replay of the last ≤ 10 messages starts 2.4 s in */
-const INTRO_REPLAY_AT = 2.4;
 
 export type PulseMode = 'first' | 'live' | 'catchup';
 
@@ -240,6 +239,7 @@ export class ConstellationEngine {
     const shared = {
       uPixelRatio: { value: this.pixelRatio },
       uIntroT: { value: 99 },
+      uStagger: { value: 0.06 },
       uCenterZ: { value: -HOME.dist },
       uRefDist: { value: HOME.dist },
       uR: { value: SHELL_R },
@@ -337,7 +337,7 @@ export class ConstellationEngine {
    * the intro; reduced motion gets static "new" rings instead.
    */
   pulse(msgs: readonly ParsedMsg[], mode: PulseMode) {
-    const lead = mode === 'first' && this.introOn ? Math.max(0.05, INTRO_REPLAY_AT - this.introT) : 0.05;
+    const lead = mode === 'first' && this.introOn ? Math.max(0.05, REPLAY_START_S - this.introT) : 0.05;
     const r = schedulePulses({ msgs, startS: this.time + lead, nowMs: Date.now(), mode, reducedMotion: this.reduced });
     this.newRing = r.newRing;
     this.applyFires(r.fires);
@@ -406,7 +406,10 @@ export class ConstellationEngine {
     if (this.reduced) return;
     this.introOn = true;
     this.introT = 0;
+    this.orbit.setCurrent(introState(0, { reduced: false, home: this.homePose() }).pose);
   }
+
+  private homePose() { return { ...HOME, dist: this.homeDist }; }
 
   protected finishIntro() {
     this.introOn = false;
@@ -460,6 +463,7 @@ export class ConstellationEngine {
     }
     this.nodes.geometry.setDrawRange(0, i);
     this.rings.geometry.setDrawRange(0, i);
+    this.nodeMat.uniforms.uStagger.value = igniteStagger(i);
     for (const a of Object.values(na)) a.needsUpdate = true;
     for (const a of Object.values(ra)) a.needsUpdate = true;
   }
@@ -687,8 +691,10 @@ export class ConstellationEngine {
     return this.time < this.pulseUntil || this.time < this.flashUntil || this.arrivals.length > 0;
   }
 
-  /** Subclass hook: idle drift allowed now. */
-  protected driftAllowed(): boolean { return false; }
+  /** Idle drift (C-D8): 8 s without input, nothing selected, not reduced motion, intro over. */
+  protected driftAllowed(): boolean {
+    return !this.introOn && driftOn(performance.now() - this.lastInputAt, this.view.selected != null, this.reduced);
+  }
 
   requestRender = () => {
     if (this.disposed || this.raf || !this.visible || !this.pageShown || !this.onScreen) return;
@@ -703,10 +709,16 @@ export class ConstellationEngine {
     this.last = now;
     this.time += dt;
 
+    let draw = 1;
     if (this.introOn) {
       this.introT += dt;
       this.nodeMat.uniforms.uIntroT.value = this.introT;
-      if (this.introT > 6.4) this.finishIntro();
+      const f = introState(this.introT, { reduced: this.reduced, home: this.homePose() });
+      if (f.dolly < 1) this.orbit.setCurrent(f.pose);
+      draw = f.ribbons;
+      if (this.introT >= INTRO_END_S) this.finishIntro();
+    } else if (this.driftAllowed()) {
+      this.orbit.drift(DRIFT_RAD_S * dt);
     }
     const slerp = this.stepSlots(now);
     if (slerp) this.moveRibbons();
@@ -716,7 +728,7 @@ export class ConstellationEngine {
     this.ringMat.uniforms.uTime.value = this.time;
     this.ribbons.setUniforms({
       time: this.time,
-      draw: this.introOn ? Math.min(1, Math.max(0, (this.introT - 1.2) / 1.2)) : 1,
+      draw,
       width: this.width,
       height: this.height,
       pixelRatio: this.pixelRatio,

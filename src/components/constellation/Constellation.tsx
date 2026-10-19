@@ -5,10 +5,13 @@ import type { Graph, WindowId } from '../../lib/constellation/aggregate';
 import { parseViewState, writeViewState } from '../../lib/constellation/url-state';
 import type { ViewState } from '../../lib/constellation/url-state';
 import { relTime, summary } from '../../lib/constellation/summary';
+import { sheetData } from '../../lib/constellation/sheet';
 import { getReducedMotion, subscribeReducedMotion, webglAvailable } from '../../lib/three';
 import type { HoverInfo, ViewInput } from './engine';
 import { ConstellationHUD } from './ConstellationHUD';
 import { ConstellationFallback } from './ConstellationFallback';
+import { FilterBar } from './FilterBar';
+import { OracleSheet } from './OracleSheet';
 
 // the three.js scene is its own chunk: HUD, fallback numbers and the list paint first
 const ConstellationCanvas = lazy(() => import('./ConstellationCanvas'));
@@ -16,6 +19,8 @@ const ConstellationCanvas = lazy(() => import('./ConstellationCanvas'));
 interface ConstellationProps {
   /** the page's single poller (shared with the stream list) */
   feed: FeedPoll;
+  /** localhost only (C-D4): open the maw terminal for an oracle */
+  onTerminal?: (oracleLabel: string) => void;
 }
 
 function hoverText(g: Graph, h: HoverInfo): string {
@@ -30,12 +35,12 @@ function hoverText(g: Graph, h: HoverInfo): string {
 }
 
 /** Pulse hero: capability gate → 3D canvas or the 2D fallback; owns window / focus / selection (URL-synced). */
-export function Constellation({ feed }: ConstellationProps) {
+export function Constellation({ feed, onTerminal }: ConstellationProps) {
   const reducedMotion = useSyncExternalStore(subscribeReducedMotion, getReducedMotion, () => false);
   const [webgl] = useState(() => webglAvailable());
   const [lost, setLost] = useState(false);
   const [view, setViewState] = useState<ViewState>(() => parseViewState(window.location.search));
-  const [hideHostNodes] = useState(false);
+  const [hideHostNodes, setHideHostNodes] = useState(false);
   const [hover, setHover] = useState<HoverInfo | null>(null);
 
   const setView = useCallback((next: ViewState) => {
@@ -56,6 +61,10 @@ export function Constellation({ feed }: ConstellationProps) {
   const onSelect = useCallback((key: string | null) => setView({ ...view, sel: key }), [view, setView]);
   const onWindow = useCallback((w: WindowId) => setView({ ...view, w }), [view, setView]);
   const onLost = useCallback(() => setLost(true), []);
+  const onFocus = useCallback((focus: string[]) => setView({ ...view, focus }), [view, setView]);
+  const onClose = useCallback(() => setView({ ...view, sel: null }), [view, setView]);
+  const onPartner = useCallback((p: string) => { if (selected) setView({ ...view, focus: [selected, p] }); }, [view, selected, setView]);
+  const sheet = useMemo(() => (selected ? sheetData(graph, selected) : null), [graph, selected]);
 
   const fallback = !webgl || lost;
 
@@ -77,7 +86,7 @@ export function Constellation({ feed }: ConstellationProps) {
             onContextLost={onLost}
             onSelect={onSelect}
             onHover={setHover}
-            className="absolute inset-0"
+            className={`absolute inset-0 transition-opacity duration-200 ${sheet ? 'max-md:opacity-40' : ''}`}
           />
         </Suspense>
       )}
@@ -100,7 +109,23 @@ export function Constellation({ feed }: ConstellationProps) {
           {hoverText(graph, hover)}
         </div>
       )}
+      <FilterBar
+        nodes={graph.nodes}
+        focus={view.focus}
+        onFocus={onFocus}
+        hideHostNodes={hideHostNodes}
+        onHideHostNodes={setHideHostNodes}
+      />
       <p className="sr-only" aria-live="polite">{summary(graph)}</p>
+      {sheet && (
+        <OracleSheet
+          data={sheet}
+          now={graph.now}
+          onClose={onClose}
+          onPartner={onPartner}
+          onTerminal={onTerminal && sheet.kind === 'oracle' ? () => onTerminal(sheet.label) : undefined}
+        />
+      )}
     </section>
   );
 }

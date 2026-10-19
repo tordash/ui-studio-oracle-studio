@@ -315,7 +315,7 @@ export function Pulse() {
   return (
     <div className="min-h-[calc(100vh-64px)] bg-[#0a0a0f]">
       {/* Fleet Constellation hero — same poller as the stream below */}
-      <Constellation feed={feed} />
+      <Constellation feed={feed} onTerminal={TERMINAL_OK ? openTerminal : undefined} />
 
       {/* Active Oracles bar */}
       <div className="border-b border-white/[0.06] px-6 py-5">

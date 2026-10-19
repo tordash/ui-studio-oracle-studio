@@ -65,7 +65,7 @@ export const SHELL_FRAG = /* glsl */ `
 /**
  * Nodes: one Points. Size = CSS px × DPR with a clamped distance attenuation
  * (far nodes stay tappable); back-hemisphere nodes fade as a depth cue.
- * Intro ignite: rank-ordered, 60 ms apart, slight overshoot.
+ * Intro ignite: rank-ordered, ≤ 60 ms apart (lib/constellation/intro), slight overshoot.
  */
 export const NODE_VERT = /* glsl */ `
   attribute vec3 aColor;
@@ -75,6 +75,7 @@ export const NODE_VERT = /* glsl */ `
   attribute float aRank;
   uniform float uPixelRatio;
   uniform float uIntroT;
+  uniform float uStagger;
   uniform float uCenterZ;
   uniform float uRefDist;
   uniform float uR;
@@ -82,7 +83,7 @@ export const NODE_VERT = /* glsl */ `
   varying float vAlpha;
   varying float vHot;
   float ignite(float r) {
-    float t = clamp((uIntroT - 0.3 - 0.06 * r) / 0.45, 0.0, 1.0);
+    float t = clamp((uIntroT - 0.3 - uStagger * r) / 0.45, 0.0, 1.0);
     float c1 = 1.70158;
     float c3 = c1 + 1.0;
     return 1.0 + c3 * pow(t - 1.0, 3.0) + c1 * pow(t - 1.0, 2.0);
