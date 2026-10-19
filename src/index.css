@@ -192,3 +192,20 @@ a {
   0%, 100% { opacity: 0.8; }
   50% { opacity: 1; }
 }
+
+/* ── Knowledge Galaxy: side sheet + tooltip motion ── */
+@keyframes galaxySheetIn {
+  from { transform: translateX(104%); opacity: 0.6; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes galaxySheetOut {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(104%); opacity: 0.6; }
+}
+.galaxy-sheet-in { animation: galaxySheetIn 0.34s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.galaxy-sheet-out { animation: galaxySheetOut 0.22s cubic-bezier(0.55, 0, 0.75, 0.3) both; }
+.galaxy-tooltip { transition: opacity 0.16s ease-out; will-change: transform; }
+@media (prefers-reduced-motion: reduce) {
+  .galaxy-sheet-in, .galaxy-sheet-out { animation: none; }
+  .galaxy-tooltip { transition: none; }
+}
