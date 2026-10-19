@@ -1,23 +1,16 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { getFeed } from '../api/oracle';
-import type { FeedEvent } from '../api/oracle';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { isRemote } from '../api/host';
+import { pairEvents } from '../lib/pulse/stream';
+import { oracleColor } from '../lib/constellation/colors';
+import { recipientOf } from '../lib/constellation/parse';
+import { canUseTerminal } from '../lib/constellation/terminal-gate';
+import { useFeedPoll } from '../hooks/useFeedPoll';
+import { LiveDot } from '../components/constellation/LiveDot';
+import { Constellation } from '../components/constellation/Constellation';
 
 const MAW_BASE = `http://${window.location.hostname}:3456`;
-
-const ORACLE_COLORS: Record<string, string> = {
-  neo: '#64b5f6',
-  mother: '#ce93d8',
-  hermes: '#ffb74d',
-  pulse: '#4dd0e1',
-  fireman: '#ef5350',
-  volt: '#fdd835',
-  nexus: '#81c784',
-  dustboy: '#a1887f',
-  arthur: '#ff8a65',
-  odin: '#b39ddb',
-  homekeeper: '#90a4ae',
-  xiaoer: '#f48fb1',
-};
+/** maw :3456 (sessions, capture, send → tmux) only on localhost with no remote ?host= (C-D4). */
+const TERMINAL_OK = canUseTerminal(isRemote, window.location.hostname);
 
 const EVENT_ICONS: Record<string, string> = {
   UserPromptSubmit: '>_',
@@ -34,7 +27,7 @@ const EVENT_ICONS: Record<string, string> = {
 };
 
 function getOracleColor(name: string): string {
-  return ORACLE_COLORS[name] || '#888';
+  return oracleColor(name);
 }
 
 function relativeTime(ts: string): string {
@@ -47,112 +40,6 @@ function relativeTime(ts: string): string {
   if (diffS < 3600) return `${Math.floor(diffS / 60)}m`;
   if (diffS < 86400) return `${Math.floor(diffS / 3600)}h`;
   return `${Math.floor(diffS / 86400)}d`;
-}
-
-function parseTs(ts: string): number {
-  return new Date(ts.replace(' ', 'T')).getTime();
-}
-
-/** Shorten file paths and bash commands for display */
-function shortenMsg(msg: string): string {
-  // Shorten absolute paths: keep last 2 segments
-  return msg.replace(/\/(?:home\/\w+\/)?(?:Code\/)?(?:github\.com\/)?[\w-]+\/[\w-]+\/([\w/.@-]+)/g, (_, rest) => {
-    const parts = rest.split('/');
-    return parts.length > 2 ? '.../' + parts.slice(-2).join('/') : rest;
-  }).replace(/cd\s+~\/Code\/github\.com\/[\w-]+\/[\w-]+\s*&&\s*/g, '');
-}
-
-interface CollapsedGroup {
-  placeholder: FeedEvent;
-  hidden: FeedEvent[];
-}
-
-/** Merge PostToolUse into PreToolUse as duration, drop noise, collapse repeats */
-function pairEvents(events: FeedEvent[]): { events: FeedEvent[]; collapsedGroups: Map<number, CollapsedGroup> } {
-  const result: FeedEvent[] = [];
-  const pendingPre = new Map<string, number>();
-
-  // Events are newest-first, iterate reverse (oldest first) to pair
-  const reversed = [...events].reverse();
-  for (const ev of reversed) {
-    const key = `${ev.session_id}:${ev.oracle}`;
-
-    if (ev.event === 'PreToolUse') {
-      result.push({ ...ev, message: shortenMsg(ev.message) });
-      pendingPre.set(key, result.length - 1);
-    } else if (ev.event === 'PostToolUse' || ev.event === 'PostToolUseFailure') {
-      const preIdx = pendingPre.get(key);
-      if (preIdx !== undefined) {
-        const pre = result[preIdx];
-        const durationMs = parseTs(ev.timestamp) - parseTs(pre.timestamp);
-        if (durationMs > 0 && durationMs < 300_000) {
-          const durLabel = durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`;
-          result[preIdx] = {
-            ...pre,
-            event: ev.event === 'PostToolUseFailure' ? 'ToolFailed' : 'ToolDone',
-            session_id: pre.session_id + '|' + durLabel,
-          };
-        }
-        pendingPre.delete(key);
-      }
-    } else {
-      result.push({ ...ev, message: shortenMsg(ev.message) });
-      pendingPre.delete(key);
-    }
-  }
-
-  result.reverse();
-
-  // Collapse consecutive same-tool events from same oracle (e.g. 8x Edit → "Edit x8")
-  const collapsed: FeedEvent[] = [];
-  for (let i = 0; i < result.length; i++) {
-    const ev = result[i];
-    const tool = ev.message.split(':')[0];
-    // Count consecutive same oracle + same tool
-    let count = 1;
-    while (
-      i + count < result.length &&
-      result[i + count].oracle === ev.oracle &&
-      result[i + count].message.split(':')[0] === tool &&
-      (result[i + count].event === ev.event || result[i + count].event === 'ToolDone' || result[i + count].event === 'PreToolUse')
-    ) {
-      count++;
-    }
-
-    if (count >= 3) {
-      // Collapse: show first, skip middle, show last
-      collapsed.push(ev);
-      const last = result[i + count - 1];
-      if (count > 2) {
-        const hidden = result.slice(i + 1, i + count - 1).map(e => ({ ...e, message: shortenMsg(e.message) }));
-        const placeholder = {
-          ...ev,
-          event: 'Collapsed',
-          message: `... ${count - 2} more ${tool} calls`,
-          session_id: ev.session_id,
-          _hidden: hidden,
-        } as FeedEvent & { _hidden: FeedEvent[] };
-        collapsed.push(placeholder);
-      }
-      if (count > 1) collapsed.push(last);
-      i += count - 1;
-    } else {
-      collapsed.push(ev);
-    }
-  }
-
-  // Build a map of collapsed placeholder index → hidden events
-  const collapsedGroups = new Map<number, CollapsedGroup>();
-  for (let i = 0; i < collapsed.length; i++) {
-    if (collapsed[i].event === 'Collapsed' && (collapsed[i] as any)._hidden) {
-      collapsedGroups.set(i, {
-        placeholder: collapsed[i],
-        hidden: (collapsed[i] as any)._hidden,
-      });
-    }
-  }
-
-  return { events: collapsed, collapsedGroups };
 }
 
 const MSG_TRUNCATE = 120;
@@ -174,6 +61,11 @@ function MessageCell({ text, className }: { text: string; className: string }) {
       <span className="text-[10px] text-white/30 ml-1.5">{expanded ? '[-]' : `[+${text.length - MSG_TRUNCATE}]`}</span>
     </span>
   );
+}
+
+interface MawSession {
+  name: string;
+  windows: { name: string }[];
 }
 
 interface TmuxWindow {
@@ -376,42 +268,30 @@ function ansiToHtml(text: string): string {
 }
 
 export function Pulse() {
-  const [events, setEvents] = useState<FeedEvent[]>([]);
-  const [activeOracles, setActiveOracles] = useState<string[]>([]);
-  const [total, setTotal] = useState(0);
+  const feed = useFeedPoll();
   const [filterOracle, setFilterOracle] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [paused, setPaused] = useState(false);
   const [tmuxWindows, setTmuxWindows] = useState<TmuxWindow[]>([]);
   const [terminalTarget, setTerminalTarget] = useState<{ oracle: string; target: string } | null>(null);
   const [hoverPreview, setHoverPreview] = useState<{ oracle: string; target: string; x: number; y: number } | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
-  const [collapsedGroups, setCollapsedGroups] = useState<Map<number, CollapsedGroup>>(new Map());
   const hoverTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  async function loadFeed() {
-    try {
-      const data = await getFeed({
-        limit: 200,
-        oracle: filterOracle || undefined,
-      });
-      // Pair PreToolUse with PostToolUse to calculate duration, filter noise
-      const paired = pairEvents(data.events);
-      setEvents(paired.events);
-      setCollapsedGroups(paired.collapsedGroups);
-      setActiveOracles(data.active_oracles);
-      setTotal(data.total);
-      setLoading(false);
-    } catch {
-      setLoading(false);
-    }
-  }
+  // the oracle filter runs client-side (the server's oracle= matches the sender only)
+  const visibleRaw = useMemo(
+    () => (filterOracle ? feed.raw.filter(e => e.oracle === filterOracle) : feed.raw),
+    [feed.raw, filterOracle],
+  );
+  // Pair PreToolUse with PostToolUse to calculate duration, filter noise
+  const { events, collapsedGroups } = useMemo(() => pairEvents(visibleRaw), [visibleRaw]);
+  const activeOracles = feed.activeOracles;
+  const total = feed.total;
+  const loading = feed.lastOkAt == null && !feed.lastErr;
 
   useEffect(() => {
-    loadFeed();
+    if (!TERMINAL_OK) return;
     // Load tmux windows
-    fetch(`${MAW_BASE}/api/sessions`).then(r => r.json()).then((sessions: any[]) => {
+    const ac = new AbortController();
+    fetch(`${MAW_BASE}/api/sessions`, { signal: ac.signal }).then(r => r.json()).then((sessions: MawSession[]) => {
       const windows: TmuxWindow[] = [];
       for (const s of sessions) {
         for (const w of s.windows) {
@@ -421,15 +301,11 @@ export function Pulse() {
       }
       setTmuxWindows(windows);
     }).catch(() => {});
-
-    if (!paused) {
-      intervalRef.current = setInterval(loadFeed, 3000);
-    }
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [filterOracle, paused]);
+    return () => ac.abort();
+  }, []);
 
   // Unique oracles from events for filter
-  const allOracles = [...new Set(events.map(e => e.oracle))].sort();
+  const allOracles = [...new Set(feed.raw.map(e => e.oracle))].sort();
 
   function openTerminal(oracleName: string) {
     const win = tmuxWindows.find(w => w.oracle === oracleName);
@@ -438,26 +314,29 @@ export function Pulse() {
 
   return (
     <div className="min-h-[calc(100vh-64px)] bg-[#0a0a0f]">
+      {/* Fleet Constellation hero — same poller as the stream below */}
+      <Constellation feed={feed} onTerminal={TERMINAL_OK ? openTerminal : undefined} />
+
       {/* Active Oracles bar */}
       <div className="border-b border-white/[0.06] px-6 py-5">
         <div className="max-w-[960px] mx-auto">
           <div className="flex items-center gap-4 mb-4">
             <h1 className="text-2xl font-bold text-white">Oracle Pulse</h1>
             <span className="text-sm font-mono text-white/50">{total} events</span>
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex items-center gap-3">
+              <LiveDot lastOkAt={feed.lastOkAt} lastErr={feed.lastErr} hidden={feed.hidden} nextAt={feed.nextAt} />
+              {/* freeze stops applying new data; polling (and the dot) keep going */}
               <button
-                onClick={() => setPaused(!paused)}
+                onClick={() => feed.setFrozen(!feed.frozen)}
+                aria-pressed={feed.frozen}
                 className={`px-4 py-1.5 rounded-md text-sm font-mono font-bold border transition-all ${
-                  paused
+                  feed.frozen
                     ? 'border-amber-500/40 text-amber-400 bg-amber-500/10'
-                    : 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10'
+                    : 'border-white/15 text-white/60 bg-white/[0.04] hover:bg-white/[0.08]'
                 }`}
               >
-                {paused ? 'PAUSED' : 'LIVE'}
+                {feed.frozen ? 'FROZEN' : 'FREEZE'}
               </button>
-              {!paused && (
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-              )}
             </div>
           </div>
 
@@ -613,6 +492,11 @@ export function Pulse() {
                   onClick={isStop ? (e) => { e.stopPropagation(); setHoverPreview(null); openTerminal(ev.oracle); } : undefined}
                   style={isStop ? { cursor: 'pointer' } : undefined}
                 >
+                  {ev.event === 'MessageSend' && recipientOf(ev.message) && (
+                    <span className="text-xs font-mono mr-2 whitespace-nowrap" style={{ color: getOracleColor(recipientOf(ev.message)!) }}>
+                      → {recipientOf(ev.message)}
+                    </span>
+                  )}
                   <MessageCell
                     text={ev.message || ev.event}
                     className={
@@ -682,7 +566,7 @@ export function Pulse() {
       </div>
 
       {/* Hover popup */}
-      {hoverPreview && !terminalTarget && (
+      {TERMINAL_OK && hoverPreview && !terminalTarget && (
         <HoverPreview
           oracle={hoverPreview.oracle}
           target={hoverPreview.target}
@@ -698,7 +582,7 @@ export function Pulse() {
       )}
 
       {/* Terminal preview modal */}
-      {terminalTarget && (
+      {TERMINAL_OK && terminalTarget && (
         <TerminalPreview
           oracle={terminalTarget.oracle}
           target={terminalTarget.target}
