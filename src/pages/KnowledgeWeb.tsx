@@ -422,7 +422,8 @@ export function KnowledgeWeb() {
             {drilledLabel == null ? (
               <p className="mt-0.5 text-[13px] leading-snug text-text-secondary">
                 <span className="tabular-nums">{p.labels.length}</span> clusters · <span className="tabular-nums">{p.totalFiles.toLocaleString('en-US')}</span> files · <span className="tabular-nums">{p.edges.length}</span> links
-                {moteChip && <span className="max-sm:hidden"> · {moteChip}</span>}
+                {/* persistent until arra reports real per-file chunk counts (R7) */}
+                {moteChip && <span className="max-sm:block"><span className="max-sm:hidden"> · </span>{moteChip}</span>}
               </p>
             ) : (
               <div className="mt-1 flex items-center gap-2">

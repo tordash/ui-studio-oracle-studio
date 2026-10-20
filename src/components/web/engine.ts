@@ -164,6 +164,8 @@ export class WebEngine {
   protected drillCluster = -1;
   protected pendingDrill: number | null = null;
   protected intra: IntraResult | null = null;
+  /** last intra result per cluster (a reply can land before an out-then-in hop reaches its cluster) */
+  protected intraStash = new Map<number, IntraResult>();
   protected intraVector: { star: number; stars: number[] } | null = null;
   protected intraSeg: IntraSegments | null = null;
   protected intraLines: THREE.LineSegments | null = null;
@@ -423,6 +425,11 @@ export class WebEngine {
 
   /** Intra links for the drilled cluster arrived from the worker (null clears). */
   setIntra(cluster: number, r: IntraResult | null) {
+    if (r) {
+      this.intraStash.delete(cluster);
+      this.intraStash.set(cluster, r);
+      while (this.intraStash.size > 4) this.intraStash.delete(this.intraStash.keys().next().value as number);
+    } else this.intraStash.delete(cluster);
     if (cluster !== this.drillCluster) return;
     this.intra = r;
     this.intraVector = null;
@@ -618,15 +625,16 @@ export class WebEngine {
     this.drillCluster = c;
     this.drillTarget = 1;
     this.U.uDrillCluster.value = c;
-    this.intra = null;
     this.intraVector = null;
     this.clearIntra();
+    this.intra = this.intraStash.get(c) ?? null;
     const col = this.sc.coreColor;
     this.U.uLinkColor.value.setRGB(0.55 * col[c * 3] + 0.45, 0.55 * col[c * 3 + 1] + 0.45, 0.55 * col[c * 3 + 2] + 0.45);
     this.showMotes(true);
     this.applyBudgets();
     this.frameDrilled();
     this.pickDirty = true;
+    this.rebuildIntra();
   }
 
   /** Camera to the drilled cluster's 85th-percentile radius at full expansion. */

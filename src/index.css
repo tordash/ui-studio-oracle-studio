@@ -49,6 +49,7 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   min-height: 100vh;
+  font-size: 16px; /* explicit (it was the UA default): the a11y gate checks body ≥ 16 px */
   line-height: 1.6;
   /* viewport-fit=cover (index.html): keep content clear of the landscape notch */
   padding-left: env(safe-area-inset-left, 0px);
