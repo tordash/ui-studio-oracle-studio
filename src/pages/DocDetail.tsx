@@ -350,6 +350,8 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
         project={fbProject}
         docId={decoded}
         indexedTextOnly={false}
+        // no doc row was fetched (that's the point), so /doc/:id may not exist for this id
+        showFullPage={false}
       />
     );
   }
@@ -410,6 +412,7 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
         project={doc.project}
         docId={doc.id}
         indexedTextOnly={fileNotFound}
+        showFullPage
       />
     );
   }
@@ -573,13 +576,17 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
   );
 }
 
-/** Embedded sheet body: the md + GitHub / full-page links (from a file read or the doc row). */
-function EmbeddedArticle({ markdown, sourceFile, project, docId, indexedTextOnly }: {
+/**
+ * Embedded sheet body: the md + GitHub link, and "Open full page" only when a doc row
+ * was actually loaded (a vector-only id has no /doc/:id page).
+ */
+function EmbeddedArticle({ markdown, sourceFile, project, docId, indexedTextOnly, showFullPage }: {
   markdown: string;
   sourceFile: string;
   project?: string | null;
   docId: string;
   indexedTextOnly: boolean;
+  showFullPage: boolean;
 }) {
   const info = getDocDisplayInfo(sourceFile, project);
   return (
@@ -595,10 +602,12 @@ function EmbeddedArticle({ markdown, sourceFile, project, docId, indexedTextOnly
             View on GitHub ↗
           </a>
         )}
-        <Link to={`/doc/${encodeURIComponent(docId)}`}
-          className="text-xs text-text-secondary no-underline px-2.5 py-1 rounded border border-white/[0.08] transition-colors duration-200 hover:border-accent hover:text-accent">
-          Open full page →
-        </Link>
+        {showFullPage && (
+          <Link to={`/doc/${encodeURIComponent(docId)}`}
+            className="text-xs text-text-secondary no-underline px-2.5 py-1 rounded border border-white/[0.08] transition-colors duration-200 hover:border-accent hover:text-accent">
+            Open full page →
+          </Link>
+        )}
       </footer>
     </article>
   );
