@@ -19,7 +19,10 @@ interface PeekCardProps {
 export function PeekCard({ view, palette, titleId, onAction, onRow, onClose }: PeekCardProps) {
   const tint = view.tint >= 0 ? palette[view.tint] ?? '#888888' : '#64b5f6';
   return (
-    <div className="flex min-h-0 flex-col" style={{ fontFamily: GALAXY_FONT_STACK }}>
+    // shrink-0, never min-h-0: inside the desktop panel (flex column, max-height, overflow-y
+    // auto) a shrinkable card squeezed its rows section and the notes drew over the last
+    // link row (T21); at full height the PANEL scrolls instead
+    <div className="flex shrink-0 flex-col" style={{ fontFamily: GALAXY_FONT_STACK }}>
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.14em]" style={{ color: tint }}>
@@ -70,7 +73,7 @@ export function PeekCard({ view, palette, titleId, onAction, onRow, onClose }: P
       )}
 
       {view.rows.length > 0 && (
-        <section className="mt-4 min-h-0" aria-label={view.rowsTitle || 'Details'}>
+        <section className="mt-4 shrink-0" aria-label={view.rowsTitle || 'Details'}>
           {view.rowsTitle && (
             <h3 className="mb-1.5 text-[12px] font-semibold uppercase tracking-[0.14em] text-text-secondary">{view.rowsTitle}</h3>
           )}
