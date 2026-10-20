@@ -7,6 +7,7 @@ import { encodeForWorker } from '../src/lib/web/encode';
 import { interEdges, isDiffuse } from '../src/lib/web/inter';
 import { clusterLabels } from '../src/lib/web/keys';
 import { intraEdges } from '../src/lib/web/intra';
+import { clusterRadius, clusterStats, forceLayout, layoutBounds } from '../src/lib/web/layout';
 
 const path = process.argv[2];
 if (!path) { console.error('usage: bun scripts/web-stats.ts <map3d.json>'); process.exit(1); }
@@ -36,4 +37,19 @@ for (const key of ['∅', 'own/marketing-agency-team', 'own/tor-oracle', 'own/so
   const r = intraEdges(e, c);
   const ms = performance.now() - s;
   console.log(`intra ${label(c)}: ${r.members.length} files · posting ops ${r.postingOps.toLocaleString()} · coverage ${(r.coverage * 100).toFixed(1)}% · ${r.edgeI.length.toLocaleString()} edges · ${ms.toFixed(0)} ms`);
+}
+
+// layout (§3.1)
+{
+  const s0 = performance.now();
+  const st = clusterStats(e);
+  const radii = [...st.sizes].map(clusterRadius);
+  const centres = forceLayout(st.means, radii, r.edges);
+  const b = layoutBounds(centres, radii);
+  let worst = Infinity;
+  for (let a = 0; a < radii.length; a++) for (let q = a + 1; q < radii.length; q++) {
+    const d = Math.hypot(centres[a * 3] - centres[q * 3], centres[a * 3 + 1] - centres[q * 3 + 1], centres[a * 3 + 2] - centres[q * 3 + 2]);
+    worst = Math.min(worst, d / (radii[a] + radii[q]));
+  }
+  console.log(`layout: scene radius ${b.radius.toFixed(1)} · min gap ratio ${worst.toFixed(2)} · ${(performance.now() - s0).toFixed(1)} ms`);
 }
