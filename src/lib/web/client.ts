@@ -8,6 +8,7 @@
 
 import type { MapDocument } from '../../api/oracle';
 import { encodeForWorker, transferables } from './encode';
+import type { EncodedWeb } from './encode';
 import type { IntraResult } from './intra';
 import { createCoreState, handleWebRequest } from './worker-core';
 import type { CoreResult, WebRequest, WebResponse } from './protocol';
@@ -31,6 +32,8 @@ export interface WebCompute {
 
 export interface WebComputeOptions {
   makeWorker?: () => WorkerLike | null;
+  /** the page's own encoding of `docs`: a COPY is transferred, the caller keeps its buffers */
+  encoded?: EncodedWeb;
   /** how main-thread work is deferred (default: setTimeout 0, i.e. one request per task) */
   schedule?: (fn: () => void) => void;
 }
@@ -52,7 +55,7 @@ export function createWebCompute(docs: Docs, opts: WebComputeOptions = {}): WebC
       if (disposed) return;
       if (!mainState) {
         mainState = createCoreState();
-        mainState.enc = encodeForWorker(docs);
+        mainState.enc = opts.encoded ?? encodeForWorker(docs);
       }
       p.resolve(handleWebRequest(mainState, p.req).res);
     });
@@ -80,7 +83,7 @@ export function createWebCompute(docs: Docs, opts: WebComputeOptions = {}): WebC
     };
     worker.onerror = () => fallBack();
     try {
-      const enc = encodeForWorker(docs);
+      const enc = opts.encoded ? copyEncoded(opts.encoded) : encodeForWorker(docs);
       const req: WebRequest = { id: nextId++, kind: 'init', enc };
       pending.set(req.id, { req, resolve: () => {} });
       worker.postMessage(req, transferables(enc));
@@ -129,5 +132,17 @@ export function createWebCompute(docs: Docs, opts: WebComputeOptions = {}): WebC
       for (const p of pending.values()) p.resolve({ id: p.req.id, ok: false, error: 'disposed' });
       pending.clear();
     },
+  };
+}
+
+/** Fresh buffers with the same content (the copy is what gets transferred). */
+export function copyEncoded(e: EncodedWeb): EncodedWeb {
+  return {
+    ...e,
+    clusterOf: e.clusterOf.slice(),
+    conceptOff: e.conceptOff.slice(),
+    conceptIds: e.conceptIds.slice(),
+    pos: e.pos.slice(),
+    rank: e.rank.slice(),
   };
 }

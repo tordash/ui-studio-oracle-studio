@@ -256,7 +256,7 @@ export class WebEngine {
     canvas.style.display = 'block';
     canvas.style.touchAction = 'none';
     canvas.setAttribute('role', 'img');
-    canvas.setAttribute('aria-label', `Knowledge Web: ${sc.C} cluster nodes, ${sc.n.toLocaleString('en-US')} files`);
+    canvas.setAttribute('aria-label', `Knowledge Web: ${sc.C} nodes (one per cluster), ${data.edges.length} links, ${sc.n.toLocaleString('en-US')} files`);
     canvas.setAttribute('aria-describedby', 'web-list-summary');
     container.appendChild(canvas);
 
@@ -447,6 +447,7 @@ export class WebEngine {
   setSelectedStar(i: number) {
     this.selectedStar = i >= 0 && i < this.sc.n ? i : -1;
     this.applySelection();
+    this.rebuildIntra();
     this.requestRender();
   }
 
@@ -687,7 +688,9 @@ export class WebEngine {
   protected rebuildIntra() {
     const r = this.intra;
     if (!r || this.drillCluster < 0 || r.cluster !== this.drillCluster) return;
-    const focus = this.armed?.kind === 'star' && this.sc.clusterOf[this.armed.index] === this.drillCluster ? this.armed.index : -1;
+    // the armed star, else the open one: its full link list + vector layer are drawn on top
+    const pickFocus = (i: number) => (i >= 0 && this.sc.clusterOf[i] === this.drillCluster ? i : -1);
+    const focus = this.armed?.kind === 'star' ? pickFocus(this.armed.index) : pickFocus(this.selectedStar);
     const vector = this.intraVector && this.intraVector.star === focus ? this.intraVector.stars : undefined;
     // hover re-arms often on desktop: rebuild only when what is drawn would change
     const key = `${r.cluster}|${r.edgeI.length}|${focus}|${vector ? vector.join(',') : ''}|${this.budget.intraSegments}|${this.governor.state.pulseScale}`;

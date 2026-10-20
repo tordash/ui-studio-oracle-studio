@@ -109,6 +109,21 @@ describe('createWebCompute', () => {
     expect(core).toEqual({ ...computeCore(encodeForWorker(docs)), ms: core.ms });
   });
 
+  it('transfers a copy of a pre-encoded input; the caller keeps its buffers', async () => {
+    const enc = encodeForWorker(docs);
+    const before = enc.conceptIds.slice();
+    const posted: unknown[][] = [];
+    const w = new FakeWorker();
+    const orig = w.postMessage.bind(w);
+    w.postMessage = (m: unknown, t?: unknown) => { posted.push(t as unknown[]); orig(m); };
+    const wc = createWebCompute(docs, { makeWorker: () => w, encoded: enc });
+    expect(posted[0]).toHaveLength(5);
+    expect((posted[0] as ArrayBuffer[]).includes(enc.conceptIds.buffer as ArrayBuffer)).toBe(false);
+    expect([...enc.conceptIds]).toEqual([...before]);
+    expect((await wc.core()).inter).toEqual(interEdges(enc));
+    wc.dispose();
+  });
+
   it('computes on the main thread when no worker can be made', async () => {
     const wc = createWebCompute(docs, { makeWorker: () => null });
     expect(wc.mode).toBe('main');

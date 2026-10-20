@@ -113,7 +113,9 @@ describe('peekModel', () => {
   });
 
   it('summary + live-region text', () => {
-    expect(webSummary(m)).toBe('Knowledge Web: 5 cluster nodes, 2 links, 10,150 files');
+    expect(webSummary(m)).toBe('Knowledge Web: 5 nodes (one per cluster), 2 links between them, 10,150 files');
+    expect(webSummary(m)).toMatch(/\d+\s*nodes/i); // e2e/graph.spec.ts reads body text
+    expect(webSummary(m)).toMatch(/\d+\s*links/i);
     expect(enteredText('somtor', 92, 223)).toBe('Entered somtor: 92 files, 223 links');
     expect(enteredText('reelsmith', 1, null)).toBe('Entered reelsmith: 1 file');
     expect(pct(0.004)).toBe('0.4%');

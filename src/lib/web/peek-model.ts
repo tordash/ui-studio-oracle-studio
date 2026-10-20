@@ -189,7 +189,7 @@ export function peekModel(m: WebModel, s: PeekState): PeekView {
 
 /** One-line canvas / screen-reader summary (aria-label + live region). */
 export function webSummary(m: Pick<WebModel, 'labels' | 'totalFiles' | 'edges'>): string {
-  return `Knowledge Web: ${n0(m.labels.length)} cluster nodes, ${n0(m.edges.length)} links, ${n0(m.totalFiles)} files`;
+  return `Knowledge Web: ${n0(m.labels.length)} nodes (one per cluster), ${n0(m.edges.length)} links between them, ${n0(m.totalFiles)} files`;
 }
 
 /** Live-region text when a cluster is entered. */

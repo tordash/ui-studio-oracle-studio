@@ -20,6 +20,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { BackendGate } from './components/BackendGate';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Map } from './pages/Map';
+import { KnowledgeWeb } from './pages/KnowledgeWeb';
 import { Schedule } from './pages/Schedule';
 import { Pulse } from './pages/Pulse';
 import { Plugins } from './pages/Plugins';
@@ -78,7 +79,7 @@ function AppContent() {
         <Route path="/playground" element={<RequireAuth><Playground /></RequireAuth>} />
         <Route path="/compare" element={<RequireAuth><Compare /></RequireAuth>} />
         <Route path="/map" element={<RequireAuth><Map /></RequireAuth>} />
-        <Route path="/graph" element={<Navigate to="/map" replace />} />
+        <Route path="/graph" element={<RequireAuth><KnowledgeWeb /></RequireAuth>} />
         <Route path="/graph3d" element={<Navigate to="/map" replace />} />
         <Route path="/handoff" element={<RequireAuth><Handoff /></RequireAuth>} />
         <Route path="/activity" element={<RequireAuth><Activity /></RequireAuth>} />

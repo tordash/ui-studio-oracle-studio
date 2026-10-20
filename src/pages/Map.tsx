@@ -15,6 +15,7 @@ import type { GalaxyEngine } from '../components/galaxy/engine';
 import { getReducedMotion, subscribeReducedMotion, webglAvailable } from '../lib/three';
 import { FillViewport as GalaxyShell } from '../components/FillViewport';
 import { GLASS as glass, SPACE_BG } from '../lib/ui/space';
+import { ViewSwitch } from '../components/web/ViewSwitch';
 
 const DEFAULT_ENGINE = 'bge-m3';
 const SEARCH_LIMIT = 100;
@@ -332,6 +333,9 @@ export function Map() {
             <span className="text-text-muted">size</span><span>{data.hasChunks ? 'chunk count' : 'uniform — API has no chunk count yet'}</span>
           </div>
         </div>
+
+        {/* Galaxy | Web switch — /graph isn't in the arra menu yet (ต่อ Q3) */}
+        <ViewSwitch active="galaxy" className="absolute bottom-3 right-3 z-10 sm:bottom-4 sm:right-4" style={glass} />
 
         {/* camera controls */}
         {!useFallback && data.count > 0 && (
