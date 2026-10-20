@@ -234,7 +234,8 @@ export function Header() {
     <header className="bg-bg-secondary border-b border-border sticky top-0 z-50" style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}>
       {/* Top row: logo + stats */}
       <div className="flex justify-between items-center px-4 py-2 max-sm:py-1.5">
-        <Link to="/" className="text-lg font-bold text-accent shrink-0">
+        {/* phones: a 44 px tall hit area; -my-1.5 keeps the row (and the header) the same height */}
+        <Link to="/" className="text-lg font-bold text-accent shrink-0 max-sm:flex max-sm:min-h-11 max-sm:items-center max-sm:-my-1.5">
           ARRA 🔮Racle
           <span
             className="text-[10px] font-medium text-text-muted bg-bg-card px-1.5 py-0.5 rounded ml-2 align-middle max-sm:hidden"
@@ -249,6 +250,7 @@ export function Header() {
         {/* Session stats - moved here */}
         <div className="flex items-center gap-3 max-sm:gap-2 text-xs text-text-muted font-mono min-w-0 ml-2">
           <button
+            type="button"
             onClick={() => {
               const next = window.prompt(
                 `Oracle host (leave empty to use the default: ${import.meta.env.DEV ? 'localhost:47778' : "this page's own origin"}):\n\nExamples:\n  localhost:47778\n  http://mba.wg:47778\n  https://oracle.example.com`,
@@ -260,14 +262,19 @@ export function Header() {
               window.location.reload();
             }}
             title={`Click to change host. Currently: ${hostLabel()}`}
-            className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md border transition-all duration-150 min-w-0 max-w-[260px] max-sm:max-w-[120px] ${
-              isDefault
-                ? 'border-border text-text-muted hover:bg-bg-card'
-                : 'border-accent/40 bg-accent/10 text-accent hover:bg-accent/20'
-            }`}
+            // the button is the (44 px tall on phones) hit area; the chip inside keeps its look
+            className="group flex min-w-0 max-w-[260px] items-center rounded-md border-none bg-transparent p-0 font-[inherit] text-inherit cursor-pointer max-sm:max-w-[120px] max-sm:min-h-11 max-sm:-my-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
           >
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isDefault ? 'bg-text-muted' : 'bg-accent animate-pulse'}`} />
-            <span className="truncate">{hostLabel()}</span>
+            <span
+              className={`flex min-w-0 items-center gap-1.5 px-2 py-0.5 rounded-md border transition-all duration-150 ${
+                isDefault
+                  ? 'border-border text-text-muted group-hover:bg-bg-card'
+                  : 'border-accent/40 bg-accent/10 text-accent group-hover:bg-accent/20'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isDefault ? 'bg-text-muted' : 'bg-accent animate-pulse'}`} />
+              <span className="truncate">{hostLabel()}</span>
+            </span>
           </button>
           <span className="max-sm:hidden">{duration}</span>
           <span className="max-sm:hidden">{stats.searches}s</span>
