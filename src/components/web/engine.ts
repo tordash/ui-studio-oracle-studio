@@ -26,12 +26,16 @@ import {
 } from '../../lib/web/camera';
 import type { Spring } from '../../lib/web/camera';
 import type { Rig, Vec3 } from '../../lib/web/camera';
-import { fitSphereDistance, frameBounds, frameDistance } from '../../lib/galaxy/frame';
+import { fitSphereDistance } from '../../lib/galaxy/frame';
+import { fitView, NO_INSETS } from '../../lib/web/fit';
+import type { FitInsets } from '../../lib/web/fit';
 import { ScreenGrid, projectPoints } from '../../lib/galaxy/pick-grid';
-import { DRILL_SCALE } from '../../lib/web/layout';
+import { DRILL_SCALE, drillStarScale } from '../../lib/web/layout';
 import type { WebScene } from '../../lib/web/scene';
 import { starWorldPos, starWorldPositions, starsOf } from '../../lib/web/scene';
-import { buildArcs, buildPulses, ribbonStrip, arcPolyline, buildIntraSegments, buildIntraPulses } from '../../lib/web/arcs';
+import {
+  buildArcs, buildPulses, ribbonStrip, arcPolyline, buildIntraSegments, buildIntraPulses, intraRestCount, segmentLengths, intraLinkAlpha,
+} from '../../lib/web/arcs';
 import type { ArcEdge, ArcSet, PulseSet, IntraSegments } from '../../lib/web/arcs';
 import type { IntraResult } from '../../lib/web/intra';
 import { pickArc, pickCore, projectedRadius, STAR_PICK_MOUSE, STAR_PICK_TOUCH, ARC_PICK_PX } from '../../lib/web/pick';
@@ -46,6 +50,8 @@ export const WEB_FOV = 50;
 export const STAR_WORLD_SIZE = 0.17;
 const MIN_DIST = 1.2;
 const INTRO_MS = 1600;
+/** share of the free viewport a drilled cluster spans (every star on screen) */
+export const DRILL_FILL = 0.84;
 
 /** What a tap / hover / keyboard selection points at. */
 export type ArmTarget =
@@ -118,6 +124,7 @@ export class WebEngine {
     uDrill: { value: 0 } as U,
     uDrillCluster: { value: -1 } as U,
     uDrillScale: { value: DRILL_SCALE } as U,
+    uDrillStarScale: { value: 1 } as U,
     uPixelRatio: { value: 1 } as U,
     uScale: { value: 1 } as U,
     uStarSize: { value: STAR_WORLD_SIZE } as U,
@@ -191,6 +198,10 @@ export class WebEngine {
   // camera
   protected rig: Rig;
   protected home = { target: [0, 0, 0] as Vec3, dist: 40, yaw: 0, pitch: 0.32 };
+  /** CSS px of the canvas covered by HUD / cards; framing centres content in the rest */
+  protected insets: FitInsets = { ...NO_INSETS };
+  /** true while the camera rests on (or flies to) the framed pose — no user move since */
+  protected atFrame = true;
   protected poseKey: number[] = [];
   protected tmpV = new THREE.Vector3();
   protected vp = new THREE.Matrix4();
@@ -449,6 +460,14 @@ export class WebEngine {
     this.requestRender();
   }
 
+  /** HUD / card insets for framing; re-frames when the camera still rests on the framed pose. */
+  setFrameInsets(i: FitInsets) {
+    const a = this.insets;
+    if (Math.abs(a.top - i.top) < 1 && Math.abs(a.right - i.right) < 1 && Math.abs(a.bottom - i.bottom) < 1 && Math.abs(a.left - i.left) < 1) return;
+    this.insets = { ...i };
+    if (this.atFrame) this.goHome();
+  }
+
   get drilledCluster(): number { return this.drillTarget > 0 ? this.drillCluster : -1; }
 
   setSelectedStar(i: number) {
@@ -459,12 +478,14 @@ export class WebEngine {
   }
 
   zoomBy(f: number) {
+    this.atFrame = false;
     this.rig.dist.goal = clampDist(this.rig, this.rig.dist.goal * f);
     if (this.reduced) snapRig(this.rig);
     this.requestRender();
   }
 
   goHome(immediate = false) {
+    this.atFrame = true;
     if (this.drillTarget > 0 && this.drillCluster >= 0) { this.frameDrilled(); if (immediate || this.reduced) snapRig(this.rig); this.requestRender(); return; }
     this.rig.goalTarget = [...this.home.target] as Vec3;
     this.rig.dist.goal = this.home.dist;
@@ -478,6 +499,7 @@ export class WebEngine {
   /** Ease the camera toward a cluster (keyboard focus follows; jump under reduced motion). */
   focusCluster(c: number) {
     if (c < 0 || c >= this.sc.C) return;
+    this.atFrame = false;
     const sc = this.sc;
     this.rig.goalTarget = [sc.centres[c * 3], sc.centres[c * 3 + 1], sc.centres[c * 3 + 2]];
     this.rig.dist.goal = clampDist(this.rig, Math.max(fitSphereDistance(sc.radii[c] * 2.2, WEB_FOV, this.width / this.height), 8));
@@ -490,6 +512,7 @@ export class WebEngine {
   /** Ease the camera to a star (jump under reduced motion). */
   flyToStar(i: number) {
     if (i < 0 || i >= this.sc.n) return;
+    this.atFrame = false;
     const p = starWorldPos(this.sc, i, this.U.uDrill.value, this.U.uDrillCluster.value);
     this.rig.goalTarget = [p[0], p[1], p[2]];
     this.rig.dist.goal = clampDist(this.rig, Math.min(this.rig.dist.goal, 6));
@@ -628,8 +651,10 @@ export class WebEngine {
     this.intraVector = null;
     this.clearIntra();
     this.intra = this.intraStash.get(c) ?? null;
+    // links in the cluster's own hue (a touch lifted), never near-white
     const col = this.sc.coreColor;
-    this.U.uLinkColor.value.setRGB(0.55 * col[c * 3] + 0.45, 0.55 * col[c * 3 + 1] + 0.45, 0.55 * col[c * 3 + 2] + 0.45);
+    this.U.uLinkColor.value.setRGB(0.85 * col[c * 3] + 0.15, 0.85 * col[c * 3 + 1] + 0.15, 0.85 * col[c * 3 + 2] + 0.15);
+    this.U.uDrillStarScale.value = drillStarScale(this.sc.radii[c]);
     this.showMotes(true);
     this.applyBudgets();
     this.frameDrilled();
@@ -637,15 +662,22 @@ export class WebEngine {
     this.rebuildIntra();
   }
 
-  /** Camera to the drilled cluster's 85th-percentile radius at full expansion. */
+  /**
+   * Camera to EVERY star of the drilled cluster at full expansion, at the current
+   * orbit angle, inside the free viewport (lib/web/fit). No home-distance clamp: a big
+   * cluster's far lobe — and the links into it — must never sit off-screen.
+   */
   protected frameDrilled() {
     const c = this.drillCluster;
     const idx = starsOf(this.sc, c);
     const pos = starWorldPositions(this.sc, 1, c);
-    const b = frameBounds(pos, idx, 0.85);
-    if (!b) return;
-    this.rig.goalTarget = [b.cx, b.cy, b.cz];
-    this.rig.dist.goal = frameDistance({ radius: Math.max(b.radius, 1.5) }, WEB_FOV, this.camera.aspect, { minDist: 2.5, maxDist: this.home.dist });
+    const f = fitView(pos, idx, this.rig.yaw.goal, this.rig.pitch.goal, {
+      fovDeg: WEB_FOV, width: this.width, height: this.height, fill: DRILL_FILL, percentile: 1, insets: this.insets,
+    });
+    if (!f) return;
+    this.rig.maxDist = Math.max(this.rig.maxDist, f.dist * 1.6);
+    this.rig.goalTarget = f.target;
+    this.rig.dist.goal = clampDist(this.rig, Math.max(2.5, f.dist));
     this.rig.speed = 2.6;
   }
 
@@ -713,14 +745,18 @@ export class WebEngine {
     const focus = this.armed?.kind === 'star' ? pickFocus(this.armed.index) : pickFocus(this.selectedStar);
     const vector = this.intraVector && this.intraVector.star === focus ? this.intraVector.stars : undefined;
     // hover re-arms often on desktop: rebuild only when what is drawn would change
-    const key = `${r.cluster}|${r.edgeI.length}|${focus}|${vector ? vector.join(',') : ''}|${this.budget.intraSegments}|${this.governor.state.pulseScale}`;
+    const key = `${r.cluster}|${r.edgeI.length}|${focus}|${vector ? vector.join(',') : ''}|${this.budget.intraRest}|${this.governor.state.pulseScale}`;
     if (this.intraLines && key === this.intraKey) return;
     this.clearIntra();
     this.intraKey = key;
-    const seg = buildIntraSegments(r, { cap: this.budget.intraSegments, focusStar: focus, vector });
+    // at rest only the strongest links (≈12 % of the files, tier rest cap), alpha by weight ×
+    // density × length, so a 4,700-file drill reads as a constellation, not a white hairball
+    const rest = intraRestCount(r.members.length, this.budget.intraRest, this.budget.intraSegments);
+    const seg = buildIntraSegments(r, { cap: rest, focusStar: focus, vector });
     this.intraSeg = seg;
     this.U.uHasFocus.value = focus >= 0 ? 1 : 0;
     const sc = this.sc;
+    const alpha = intraLinkAlpha(seg, segmentLengths(seg, sc.starOff, DRILL_SCALE));
 
     // lines: 2 vertices per segment, both running WEB_POS so they follow the stars
     const n = seg.count * 2;
@@ -735,7 +771,7 @@ export class WebEngine {
         meta[v * 4 + 1] = sc.starMeta[star * 4 + 1];
         meta[v * 4 + 2] = sc.starMeta[star * 4 + 2];
         meta[v * 4 + 3] = end;
-        link[v * 3] = Math.max(0, Math.min(1, (seg.s[q] - 0.12) / 0.6));
+        link[v * 3] = alpha[q];
         link[v * 3 + 1] = seg.dots[q];
         link[v * 3 + 2] = seg.focus[q];
       }
@@ -1088,6 +1124,7 @@ export class WebEngine {
         // two fingers: pinch-zoom + midpoint pan
         const [a, b] = [...this.pointers.values()];
         const spread = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+        this.atFrame = false;
         this.rig.dist.goal = pinchGoal(this.rig, this.pinch.dist0, this.pinch.spread0, spread);
         const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
         const k = worldPerPx(this.rig.dist.cur, WEB_FOV, this.height);
@@ -1103,6 +1140,7 @@ export class WebEngine {
         this.container.style.cursor = 'grabbing';
       }
       if (this.down.dragged && !this.down.multi) {
+        this.atFrame = false;
         if (this.down.pan) {
           const k = worldPerPx(this.rig.dist.cur, WEB_FOV, this.height);
           this.rig.goalTarget = panGoal(this.down.target, this.rig.yaw.cur, this.rig.pitch.cur, dx, dy, k);

@@ -178,6 +178,8 @@ export function arcPolyline(arcs: Pick<ArcSet, 'p0' | 'p2' | 'ctrl'>, edge: numb
 
 export interface IntraSegments {
   count: number;
+  /** rows [0, base) are the capped base layer (strongest first); the rest are focus extras */
+  base: number;
   /** star indices (global) */
   i: Int32Array;
   j: Int32Array;
@@ -253,9 +255,63 @@ export function buildIntraSegments(r: IntraResult, o: IntraSegmentOptions): Intr
   }
   const n = rows.length;
   const out: IntraSegments = {
-    count: n, i: new Int32Array(n), j: new Int32Array(n), s: new Float32Array(n), dots: new Float32Array(n), focus: new Uint8Array(n),
+    count: n, base: sorted.length, i: new Int32Array(n), j: new Int32Array(n), s: new Float32Array(n), dots: new Float32Array(n), focus: new Uint8Array(n),
   };
   rows.forEach((x, q) => { out.i[q] = x.i; out.j[q] = x.j; out.s[q] = x.s; out.dots[q] = x.dots; out.focus[q] = x.focus; });
+  return out;
+}
+
+// ── rest layer: a constellation, not a hairball ─────────────────────────
+// T21: a 4,735-file drill drew 4,000 links, every one with cosine ≥ 0.41, at alpha
+// 0.48–0.64, nearly white, additive — the core saturated and ~10 % of the links ran
+// ≥ 55 units into a far lobe. At rest only the strongest few hundred are drawn, each
+// fainter the more there are, long ones receding; the armed star still gets its full list.
+
+/** Links drawn at rest: ~12 % of the files (≥ 150, so small clusters show them all), ≤ the tier's rest cap. */
+export const INTRA_REST_SHARE = 0.12;
+export const INTRA_REST_MIN = 150;
+
+export function intraRestCount(members: number, tierRest: number, tierCap: number): number {
+  const want = Math.max(INTRA_REST_MIN, Math.round(INTRA_REST_SHARE * Math.max(0, members)));
+  return Math.max(0, Math.min(want, tierRest, tierCap));
+}
+
+/** World length of each segment at full drill (a cluster's stars share one centre). */
+export function segmentLengths(seg: Pick<IntraSegments, 'count' | 'i' | 'j'>, starOff: ArrayLike<number>, scale: number): Float32Array {
+  const out = new Float32Array(seg.count);
+  for (let q = 0; q < seg.count; q++) {
+    const a = seg.i[q] * 3, b = seg.j[q] * 3;
+    out[q] = Math.hypot(starOff[a] - starOff[b], starOff[a + 1] - starOff[b + 1], starOff[a + 2] - starOff[b + 2]) * scale;
+  }
+  return out;
+}
+
+export const INTRA_ALPHA_MAX = 0.6;
+/** base-link count at which each link keeps full alpha; more links → each one fainter (√) */
+export const INTRA_ALPHA_REF = 120;
+
+/**
+ * Rest alpha per segment (the shader's aLink.x):
+ *   weight  — strength over the drawn base set, weakest 0.35 → strongest 1;
+ *   density — √(INTRA_ALPHA_REF / base), clamped to [0.3, 1];
+ *   length  — median base length / length, clamped to [0.3, 1].
+ */
+export function intraLinkAlpha(seg: Pick<IntraSegments, 'count' | 'base' | 's'>, lengths: ArrayLike<number>): Float32Array {
+  const out = new Float32Array(seg.count);
+  const base = Math.min(seg.base, seg.count);
+  if (seg.count === 0) return out;
+  let sMin = Infinity, sMax = -Infinity;
+  for (let q = 0; q < base; q++) { sMin = Math.min(sMin, seg.s[q]); sMax = Math.max(sMax, seg.s[q]); }
+  if (!(sMax >= sMin)) { sMin = 0; sMax = 1; }
+  const lens = Float64Array.from({ length: base }, (_, q) => lengths[q]).sort();
+  const med = base > 0 ? lens[base >> 1] : 1;
+  const density = Math.min(1, Math.max(0.3, Math.sqrt(INTRA_ALPHA_REF / Math.max(1, base))));
+  for (let q = 0; q < seg.count; q++) {
+    const w = sMax > sMin ? Math.min(1, Math.max(0, (seg.s[q] - sMin) / (sMax - sMin))) : 1;
+    const len = lengths[q];
+    const lf = len > 1e-9 && med > 0 ? Math.min(1, Math.max(0.3, med / len)) : 1;
+    out[q] = INTRA_ALPHA_MAX * density * (0.35 + 0.65 * w) * lf;
+  }
   return out;
 }
 

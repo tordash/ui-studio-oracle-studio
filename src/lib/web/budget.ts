@@ -11,8 +11,10 @@ export interface TierBudget {
   motes: number;
   /** flowing pulses on inter-cluster links */
   interPulses: number;
-  /** intra-cluster link segments drawn in a drill */
+  /** intra-cluster link segments drawn in a drill (hard ceiling) */
   intraSegments: number;
+  /** intra links drawn at rest in a drill (the strongest; T21: a constellation, not a hairball) */
+  intraRest: number;
   /** flowing pulses on intra links */
   intraPulses: number;
   /** loop fps while nothing is being touched (motion on) */
@@ -22,9 +24,9 @@ export interface TierBudget {
 }
 
 export const BUDGETS: Readonly<Record<GpuTier, Readonly<TierBudget>>> = {
-  high: { dprMax: 2, starClampPx: 46, motes: Infinity, interPulses: 600, intraSegments: 4000, intraPulses: 400, idleFps: 60, activeFps: 60 },
-  mid: { dprMax: 1.5, starClampPx: 28, motes: 24000, interPulses: 250, intraSegments: 1500, intraPulses: 150, idleFps: 30, activeFps: 60 },
-  low: { dprMax: 1, starClampPx: 28, motes: 8000, interPulses: 120, intraSegments: 800, intraPulses: 60, idleFps: 30, activeFps: 30 },
+  high: { dprMax: 2, starClampPx: 46, motes: Infinity, interPulses: 600, intraSegments: 4000, intraRest: 600, intraPulses: 400, idleFps: 60, activeFps: 60 },
+  mid: { dprMax: 1.5, starClampPx: 28, motes: 24000, interPulses: 250, intraSegments: 1500, intraRest: 360, intraPulses: 150, idleFps: 30, activeFps: 60 },
+  low: { dprMax: 1, starClampPx: 28, motes: 8000, interPulses: 120, intraSegments: 800, intraRest: 220, intraPulses: 60, idleFps: 30, activeFps: 30 },
 };
 
 /** Pulses on one inter link: 1 + round(3ŵ) on desktop, 1 + round(ŵ) on phones (ŵ = w / max w). */

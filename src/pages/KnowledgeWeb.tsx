@@ -39,6 +39,7 @@ import { PeekCard } from '../components/web/PeekCard';
 import { WebList } from '../components/web/WebList';
 import { WebFallback2D, canvas2dAvailable } from '../components/web/WebFallback2D';
 import { renderMode } from '../lib/web/project2d';
+import { frameInsets } from '../lib/web/fit';
 import { Related } from '../components/web/Related';
 import { ViewSwitch } from '../components/web/ViewSwitch';
 import { Sheet } from '../components/ui/Sheet';
@@ -82,6 +83,8 @@ export function KnowledgeWeb() {
   const engineRef = useRef<WebEngine | null>(null);
   const computeRef = useRef<WebCompute | null>(null);
   const labelsLayout = useRef<LabelLayoutFn | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const hudRef = useRef<HTMLDivElement>(null);
   const hist = useRef(new WebHistory());
   const navigate = useNavigate();
   const location = useLocation();
@@ -166,7 +169,19 @@ export function KnowledgeWeb() {
 
   // ── engine sync ──
   const onReady = useCallback(() => setEngineVersion(v => v + 1), []);
-  useEffect(() => { engineRef.current?.setDrill(drilled); }, [drilled, engineVersion]);
+  // framing insets (HUD on top; inside a drill the peek card / sheet) go in before the drill,
+  // so the camera flight already aims at the part of the canvas nothing covers
+  const measureInsets = useCallback(() => {
+    const stage = stageRef.current?.getBoundingClientRect();
+    const hud = hudRef.current?.getBoundingClientRect();
+    return frameInsets({ wide, drilled: drilled >= 0, hudBottom: stage && hud ? hud.bottom - stage.top : 0 });
+  }, [wide, drilled]);
+  useEffect(() => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    eng.setFrameInsets(measureInsets());
+    eng.setDrill(drilled);
+  }, [drilled, engineVersion, measureInsets]);
   useEffect(() => { engineRef.current?.setSelectedStar(openStar); }, [openStar, engineVersion]);
   // opening a file (incl. a Related hop) flies the camera to its star; a cross-cluster hop's
   // drill framing (out-then-in) takes over when the new cluster begins
@@ -347,7 +362,7 @@ export function KnowledgeWeb() {
 
   return (
     <FillViewport className="relative flex overflow-hidden overscroll-none" style={{ background: SPACE_BG }}>
-      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+      <div ref={stageRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         {useFallback ? (
           <div className="absolute inset-0 overflow-y-auto overscroll-contain px-4 pb-10 pt-24 sm:px-8">
             <div className="mx-auto flex max-w-[760px] flex-col gap-4">
@@ -419,6 +434,7 @@ export function KnowledgeWeb() {
 
         {/* HUD: title + real totals, or the drilled cluster with a Back button */}
         <div
+          ref={hudRef}
           className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 px-3 pt-3 sm:px-4 sm:pt-4"
           style={{ paddingLeft: 'max(12px, env(safe-area-inset-left))', paddingRight: 'max(12px, env(safe-area-inset-right))' }}
         >

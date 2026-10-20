@@ -3,7 +3,7 @@ import { encodeForWorker } from '../encode';
 import { interEdges } from '../inter';
 import {
   clusterRadius, clusterStats, forceLayout, starOffsets, layoutBounds,
-  RADIUS_K, PCA_SCALE, OFFSET_CLAMP, LAYOUT_DEFAULTS,
+  RADIUS_K, PCA_SCALE, OFFSET_CLAMP, LAYOUT_DEFAULTS, drillStarScale, DRILL_STAR_MAX,
 } from '../layout';
 import { assignColours, WEB_PALETTE, UNSORTED_COLOUR, ACCENT_TOKENS } from '../palette';
 import { TYPE_COLORS } from '../../type-colors';
@@ -171,5 +171,14 @@ describe('assignColours', () => {
     const col = assignColours(clusterStats(eb).sizes, rb.edges, -1);
     expect(Math.max(...rb.degree)).toBeLessThan(WEB_PALETTE.length);
     for (const x of rb.edges) expect(col[x.a]).not.toBe(col[x.b]);
+  });
+});
+
+describe('drillStarScale', () => {
+  it('big drilled clusters get bigger stars (framed from farther away), small ones unchanged, capped', () => {
+    expect(drillStarScale(clusterRadius(92))).toBe(1);
+    expect(drillStarScale(clusterRadius(1368))).toBeCloseTo(clusterRadius(1368) / 3.5, 9);
+    expect(drillStarScale(clusterRadius(4735))).toBeGreaterThan(2.5);
+    expect(drillStarScale(clusterRadius(1e6))).toBe(DRILL_STAR_MAX);
   });
 });

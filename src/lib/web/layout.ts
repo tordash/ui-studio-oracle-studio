@@ -37,6 +37,18 @@ export function clusterRadius(n: number): number {
   return RADIUS_K * Math.cbrt(Math.max(1, n));
 }
 
+/**
+ * Star size multiplier inside a drill. The camera frames the whole expanded cluster,
+ * so its distance grows with R and a constant world size would shrink big clusters'
+ * stars to ~1 px; scaling by R keeps a 4,700-file drill a field of distinct ~3 px
+ * particles while a 90-file one stays as it was.
+ */
+export const DRILL_STAR_R = 3.5;
+export const DRILL_STAR_MAX = 3;
+export function drillStarScale(R: number): number {
+  return Math.max(1, Math.min(DRILL_STAR_MAX, R / DRILL_STAR_R));
+}
+
 export interface ClusterStats {
   sizes: Int32Array;
   /** mean raw PCA position per cluster (C × 3) */

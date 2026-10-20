@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { pickCore, pickArc, pointSegDist, projectedRadius, CORE_MIN_PX, ARC_PICK_PX } from '../pick';
-import { buildIntraSegments, buildIntraPulses, VECTOR_DOTS } from '../arcs';
+import { buildIntraSegments, buildIntraPulses, VECTOR_DOTS, intraRestCount, intraLinkAlpha, segmentLengths, INTRA_ALPHA_MAX } from '../arcs';
 import { encodeForWorker } from '../encode';
 import { intraEdges, neighboursOf } from '../intra';
 import { BUDGETS } from '../budget';
@@ -106,5 +106,54 @@ describe('buildIntraSegments', () => {
       expect(p.offset[k]).toBeGreaterThanOrEqual(0);
       expect(p.offset[k]).toBeLessThan(1);
     }
+  });
+});
+
+describe('intra rest layer (T21: a constellation, not a hairball)', () => {
+  const t = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}-${i}`);
+  const docs = synthDocs([{ project: 'github.com/tordash/big', size: 600, theme: [...t('a', 30), ...t('b', 80)] }], { seed: 9, perFile: [3, 9] });
+  const r = intraEdges(encodeForWorker(docs), 0);
+
+  it('rest count: ~12 % of the files, ≥ 150, ≤ the tier rest cap and the hard ceiling', () => {
+    expect(intraRestCount(92, BUDGETS.high.intraRest, BUDGETS.high.intraSegments)).toBe(150);
+    expect(intraRestCount(1368, BUDGETS.high.intraRest, BUDGETS.high.intraSegments)).toBe(164);
+    expect(intraRestCount(4735, BUDGETS.high.intraRest, BUDGETS.high.intraSegments)).toBe(568);
+    expect(intraRestCount(5311, BUDGETS.high.intraRest, BUDGETS.high.intraSegments)).toBe(600);
+    expect(intraRestCount(5311, BUDGETS.mid.intraRest, BUDGETS.mid.intraSegments)).toBe(360);
+    expect(intraRestCount(5311, BUDGETS.low.intraRest, BUDGETS.low.intraSegments)).toBe(220);
+    expect(intraRestCount(5311, 600, 100)).toBe(100);
+    for (const t of ['high', 'mid', 'low'] as const) expect(BUDGETS[t].intraRest).toBeLessThanOrEqual(BUDGETS[t].intraSegments);
+  });
+
+  it('the base layer is the strongest `rest`; focus extras come after `base`', () => {
+    const all = buildIntraSegments(r, { cap: 1e9 });
+    const s = buildIntraSegments(r, { cap: 40, focusStar: r.members[5] });
+    expect(s.base).toBe(40);
+    expect([...s.s.subarray(0, 40)]).toEqual([...all.s.subarray(0, 40)]);
+    expect(s.count).toBeGreaterThanOrEqual(40);
+  });
+
+  it('alpha: never saturating, stronger ≥ weaker at equal length, long links recede, many links fainter', () => {
+    const s = buildIntraSegments(r, { cap: 1e9 });
+    const len = new Float32Array(s.count).fill(10);
+    const a = intraLinkAlpha(s, len);
+    for (let q = 0; q < s.count; q++) {
+      expect(a[q]).toBeGreaterThan(0);
+      expect(a[q]).toBeLessThanOrEqual(INTRA_ALPHA_MAX + 1e-6);
+      if (q) expect(a[q - 1]).toBeGreaterThanOrEqual(a[q] - 1e-6); // strongest first
+    }
+    const longer = Float32Array.from(len); longer[0] = 100; // 10× the median
+    expect(intraLinkAlpha(s, longer)[0]).toBeCloseTo(a[0] * 0.3, 5);
+    // 4× the links → each one ~½ as bright (√ density), down to the floor
+    const few = { count: 30, base: 30, s: Float32Array.from({ length: 30 }, () => 0.8) };
+    const many = { count: 480, base: 480, s: Float32Array.from({ length: 480 }, () => 0.8) };
+    const af = intraLinkAlpha(few, new Float32Array(30).fill(5))[0];
+    const am = intraLinkAlpha(many, new Float32Array(480).fill(5))[0];
+    expect(am / af).toBeCloseTo(0.5, 5);
+  });
+
+  it('segment lengths use the drill-scaled offsets of both stars', () => {
+    const off = new Float32Array([0, 0, 0, 3, 4, 0]);
+    expect([...segmentLengths({ count: 1, i: Int32Array.of(0), j: Int32Array.of(1) }, off, 2)]).toEqual([10]);
   });
 });

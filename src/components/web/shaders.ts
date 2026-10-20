@@ -61,6 +61,7 @@ export const STAR_VERT = /* glsl */ `
   uniform float uStarSize;
   uniform float uClampPx;
   uniform float uIntro;
+  uniform float uDrillStarScale; // drilled cluster's stars grow with its R (lib/web/layout drillStarScale)
   varying vec3 vColor;
   varying float vAlpha;
   varying float vHot;
@@ -73,6 +74,7 @@ export const STAR_VERT = /* glsl */ `
     float hot = 0.0;
     if (aState > 1.5) { size = 1.9; alpha = 1.0; hot = 0.75; }
     else if (aState > 0.5) { size = 0.75; alpha *= 0.14; }
+    size *= mix(1.0, uDrillStarScale, uDrill * webIsDrilled(aMeta.x));
     float px = size * uStarSize * uScale * uPixelRatio / max(0.001, -mv.z);
     gl_PointSize = clamp(px, 1.6 * uPixelRatio, uClampPx * uPixelRatio) * mix(0.2, 1.0, uIntro) * step(0.004, vis);
     gl_Position = projectionMatrix * mv;
@@ -275,6 +277,8 @@ export const PULSE_VERT = /* glsl */ `
 /**
  * Intra-cluster links (drill only): LineSegments whose endpoints are stars, so each
  * vertex runs WEB_POS and the line stays attached. Fades in for uDrill > 0.6.
+ * aLink.x = rest alpha, precomputed from weight × density × length (lib/web/arcs
+ * intraLinkAlpha) so a big drill stays a constellation; colour = the cluster's palette.
  * aLink.y = dots per segment (0 solid concept link, > 0 dotted vector neighbour).
  */
 export const INTRA_LINE_VERT = /* glsl */ `
@@ -282,7 +286,7 @@ export const INTRA_LINE_VERT = /* glsl */ `
   attribute vec3 aCentre;
   attribute vec3 aOff;
   attribute vec4 aMeta;     // cluster, phase, cluster R, end (0 | 1)
-  attribute vec3 aLink;     // strength 0..1, dots (0 = solid), focus (1 = touches the armed star)
+  attribute vec3 aLink;     // rest alpha, dots (0 = solid), focus (1 = touches the armed star)
   uniform vec3 uLinkColor;
   uniform float uHasFocus;  // 1 while a star is armed: its links brighten, the rest recede
   varying vec3 vLineColor;
@@ -294,7 +298,7 @@ export const INTRA_LINE_VERT = /* glsl */ `
     vec3 p = webStarPos(aCentre, aOff, aMeta.x, aMeta.y, aMeta.z);
     gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
     float show = smoothstep(0.6, 1.0, uDrill);
-    float base = 0.14 + 0.5 * aLink.x;
+    float base = aLink.x;
     vLineColor = mix(uLinkColor, vec3(1.0), 0.35 * aLink.z * uHasFocus);
     vLineAlpha = show * mix(base, aLink.z > 0.5 ? 0.95 : base * 0.3, uHasFocus);
     vLineT = aMeta.w;
