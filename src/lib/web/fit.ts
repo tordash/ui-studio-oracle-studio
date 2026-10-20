@@ -113,6 +113,53 @@ export function fitView(points: ArrayLike<number>, indices: readonly number[] | 
   return { target, dist };
 }
 
+export interface HomePose extends Fit {
+  yaw: number;
+  pitch: number;
+}
+
+export const HOME_YAW = 0;
+export const HOME_PITCH = 0.32;
+export const HOME_FILL = 0.8;
+/** the overview ignores the farthest 1 % of stars (a few strays must not shrink the web) */
+export const HOME_PERCENTILE = 0.99;
+const SEARCH_PITCHES = [0.32, 0.6, 0.9, 1.2];
+const SEARCH_YAWS = 12;
+
+/**
+ * The overview's home pose. The default angle, unless another yaw/pitch frames the web
+ * at least 10 % tighter: the layout is ~1.7 : 1 wide, so on a portrait phone a raised,
+ * turned view lays its long axis down the screen (T21: 390 px went from a width-limited
+ * strip to a fuller frame). Searched on a ≤ `sampleMax` subsample; the final fit uses all.
+ */
+export function homePose(points: ArrayLike<number>, o: FitOptions, sampleMax = 2000): HomePose | null {
+  const n = Math.floor(points.length / 3);
+  if (n === 0) return null;
+  const opts: FitOptions = { fill: HOME_FILL, percentile: HOME_PERCENTILE, ...o };
+  const stride = Math.max(1, Math.ceil(n / sampleMax));
+  const sample: number[] = [];
+  for (let i = 0; i < n; i += stride) sample.push(i);
+  const def = fitView(points, sample, HOME_YAW, HOME_PITCH, opts)!;
+  let best = { yaw: HOME_YAW, pitch: HOME_PITCH, dist: def.dist };
+  for (let k = 0; k < SEARCH_YAWS; k++) {
+    for (const pitch of SEARCH_PITCHES) {
+      const yaw = (k * 2 * Math.PI) / SEARCH_YAWS;
+      const f = fitView(points, sample, yaw, pitch, opts)!;
+      if (f.dist < best.dist - 1e-9) best = { yaw, pitch, dist: f.dist };
+    }
+  }
+  const pose = best.dist <= def.dist * 0.9 ? best : { yaw: HOME_YAW, pitch: HOME_PITCH };
+  const f = fitView(points, null, pose.yaw, pose.pitch, opts)!;
+  return { ...f, yaw: pose.yaw, pitch: pose.pitch };
+}
+
+/** `target` (radians) shifted by whole turns to be the nearest to `from` — Home never spins a lap. */
+export function nearestAngle(from: number, target: number): number {
+  const tau = 2 * Math.PI;
+  const d = ((((target - from) % tau) + tau * 1.5) % tau) - tau / 2;
+  return from + d;
+}
+
 /**
  * Screen-space check used by the tests (and handy for debugging): CSS px of a world
  * point for a rig pose — the same projection three.js does for the rig camera.

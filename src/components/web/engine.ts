@@ -22,12 +22,12 @@ import { debugInfo } from '../../lib/web/debug';
 import type { DebugInfo } from '../../lib/web/debug';
 import {
   createRig, stepRig, snapRig, rigPosition, orbitGoal, pinchGoal, panGoal, worldPerPx, wheelFactor,
-  isDoubleTap, clampDist, TAP_SLOP_PX, cdsTween, springSettled, DRILL_OMEGA,
+  isDoubleTap, clampDist, TAP_SLOP_PX, cdsTween, springSettled, DRILL_OMEGA, PITCH_LIMIT,
 } from '../../lib/web/camera';
 import type { Spring } from '../../lib/web/camera';
 import type { Rig, Vec3 } from '../../lib/web/camera';
 import { fitSphereDistance } from '../../lib/galaxy/frame';
-import { fitView, NO_INSETS } from '../../lib/web/fit';
+import { fitView, homePose, nearestAngle, NO_INSETS } from '../../lib/web/fit';
 import type { FitInsets } from '../../lib/web/fit';
 import { ScreenGrid, projectPoints } from '../../lib/galaxy/pick-grid';
 import { DRILL_SCALE, drillStarScale } from '../../lib/web/layout';
@@ -198,6 +198,8 @@ export class WebEngine {
   // camera
   protected rig: Rig;
   protected home = { target: [0, 0, 0] as Vec3, dist: 40, yaw: 0, pitch: 0.32 };
+  /** overview star positions (no drill, no drift): what the home pose frames */
+  protected overviewPos: Float32Array;
   /** CSS px of the canvas covered by HUD / cards; framing centres content in the rest */
   protected insets: FitInsets = { ...NO_INSETS };
   /** true while the camera rests on (or flies to) the framed pose — no user move since */
@@ -352,18 +354,18 @@ export class WebEngine {
     this.arcScreen = this.arcWorld.map(w => ({ xs: new Float32Array(w.length / 3), ys: new Float32Array(w.length / 3) }));
     this.applyBudgets();
 
-    // ── camera home: fit the laid-out web ──
+    // ── camera home: frame the stars themselves (lib/web/fit homePose), not a bounding sphere ──
     const b = sc.bounds;
     this.home.target = [b.cx, b.cy, b.cz];
-    this.rig = createRig({ dist: 40, target: this.home.target, yaw: this.home.yaw, pitch: this.home.pitch, minDist: MIN_DIST, maxDist: 400 });
-    this.home.dist = this.fitHomeDistance();
-    this.rig.maxDist = Math.max(60, this.home.dist * 3);
+    this.overviewPos = starWorldPositions(sc, 0, -1);
+    this.rig = createRig({ dist: 40, target: this.home.target, yaw: this.home.yaw, pitch: this.home.pitch, minDist: MIN_DIST, maxDist: 60 });
+    this.refitHome();
     this.goHome(true);
     if (!this.reduced && sc.n > 0) {
-      // eased intro: swing in from afar while the stars fade up
+      // eased intro: swing in from afar (relative to the home angle) while the stars fade up
       this.rig.dist.cur = this.home.dist * 2.2;
-      this.rig.yaw.cur = -0.9;
-      this.rig.pitch.cur = 0.7;
+      this.rig.yaw.cur = this.home.yaw - 0.9;
+      this.rig.pitch.cur = Math.min(PITCH_LIMIT, this.home.pitch + 0.38);
       this.rig.speed = 1.5;
       this.intro = 0;
       this.U.uIntro.value = 0;
@@ -465,6 +467,7 @@ export class WebEngine {
     const a = this.insets;
     if (Math.abs(a.top - i.top) < 1 && Math.abs(a.right - i.right) < 1 && Math.abs(a.bottom - i.bottom) < 1 && Math.abs(a.left - i.left) < 1) return;
     this.insets = { ...i };
+    this.refitHome();
     if (this.atFrame) this.goHome();
   }
 
@@ -489,9 +492,9 @@ export class WebEngine {
     if (this.drillTarget > 0 && this.drillCluster >= 0) { this.frameDrilled(); if (immediate || this.reduced) snapRig(this.rig); this.requestRender(); return; }
     this.rig.goalTarget = [...this.home.target] as Vec3;
     this.rig.dist.goal = this.home.dist;
-    this.rig.yaw.goal = this.home.yaw;
+    this.rig.yaw.goal = nearestAngle(this.rig.yaw.cur, this.home.yaw);
     this.rig.pitch.goal = this.home.pitch;
-    this.rig.speed = 3;
+    if (this.intro >= 1) this.rig.speed = 3; // the intro keeps its slower swing
     if (immediate || this.reduced) snapRig(this.rig);
     this.requestRender();
   }
@@ -860,9 +863,20 @@ export class WebEngine {
     this.moteMat?.dispose();
   }
 
-  protected fitHomeDistance(): number {
-    const d = fitSphereDistance(this.sc.bounds.radius, WEB_FOV, this.width / this.height, 1.05);
-    return Math.max(8, d);
+  /**
+   * Home pose for this canvas: the stars (99th percentile) fill ~80 % of the free
+   * viewport — T21 desktop 36 % → 58 % wide / 42 % → 72 % tall; a portrait phone turns
+   * and raises the view (67 % × 25 % → 76 % × 54 %). Falls back to the bounding sphere.
+   */
+  protected refitHome() {
+    const p = homePose(this.overviewPos, { fovDeg: WEB_FOV, width: this.width, height: this.height, insets: this.insets });
+    if (p) {
+      this.home = { target: p.target, dist: Math.max(8, p.dist), yaw: p.yaw, pitch: p.pitch };
+    } else {
+      const b = this.sc.bounds;
+      this.home = { target: [b.cx, b.cy, b.cz], dist: Math.max(8, fitSphereDistance(b.radius, WEB_FOV, this.width / this.height, 1.05)), yaw: 0, pitch: 0.32 };
+    }
+    this.rig.maxDist = Math.max(this.rig.maxDist, 60, this.home.dist * 3);
   }
 
   protected applyViewport() {
@@ -1218,13 +1232,12 @@ export class WebEngine {
     const h = Math.max(1, this.container.clientHeight);
     const pr = effectiveDpr(window.devicePixelRatio || 1, this.budget, this.governor.state);
     if (w === this.width && h === this.height && pr === this.pixelRatio) return;
-    const wasHome = Math.abs(this.rig.dist.goal - this.home.dist) < 1e-3;
     this.width = w; this.height = h; this.pixelRatio = pr;
     this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h);
     this.applyViewport();
-    this.home.dist = this.fitHomeDistance();
-    if (wasHome) this.rig.dist.goal = this.home.dist;
+    this.refitHome();
+    if (this.atFrame) this.goHome(); // still on the framed pose (home or drill): re-frame for the new size
     this.requestRender();
   };
 

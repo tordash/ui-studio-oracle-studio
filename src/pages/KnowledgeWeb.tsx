@@ -40,6 +40,7 @@ import { WebList } from '../components/web/WebList';
 import { WebFallback2D, canvas2dAvailable } from '../components/web/WebFallback2D';
 import { renderMode } from '../lib/web/project2d';
 import { frameInsets } from '../lib/web/fit';
+import { LABEL_TOP_N_PHONE, LABEL_TOP_N_WIDE } from '../lib/web/labels';
 import { Related } from '../components/web/Related';
 import { ViewSwitch } from '../components/web/ViewSwitch';
 import { Sheet } from '../components/ui/Sheet';
@@ -426,6 +427,7 @@ export function KnowledgeWeb() {
               armed={armed?.kind === 'cluster' ? armed.index : -1}
               hidden={drilled >= 0}
               maxVisible={wide ? 24 : 12}
+              topN={wide ? LABEL_TOP_N_WIDE : LABEL_TOP_N_PHONE}
               layoutRef={labelsLayout}
               onTap={onLabelTap}
             />

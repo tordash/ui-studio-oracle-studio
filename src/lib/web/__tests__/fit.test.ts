@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { fitView, rigBasis, projectForRig, frameInsets, NO_INSETS, PEEK_PANEL_INSET, CONTROLS_INSET } from '../fit';
+import { fitView, rigBasis, projectForRig, frameInsets, homePose, nearestAngle, NO_INSETS, PEEK_PANEL_INSET, CONTROLS_INSET, HOME_YAW, HOME_PITCH } from '../fit';
 import type { FitInsets } from '../fit';
 import { rigPosition, createRig } from '../camera';
 import { PEEK_PX } from '../../ui/sheet-snap';
@@ -98,5 +98,69 @@ describe('frameInsets', () => {
     expect(frameInsets({ wide: true, drilled: true, hudBottom: 72 })).toEqual({ top: 80, right: CONTROLS_INSET, bottom: 0, left: PEEK_PANEL_INSET });
     expect(frameInsets({ wide: false, drilled: true, hudBottom: 113 })).toEqual({ top: 121, right: 0, bottom: PEEK_PX, left: 0 });
     expect(frameInsets({ wide: false, drilled: false, hudBottom: -5 })).toEqual({ ...NO_INSETS, top: 8 });
+  });
+});
+
+describe('homePose (overview framing)', () => {
+  /** a flat, wide web: 1.7 : 1 in x : z, thin in y — the snapshot's shape */
+  function wideWeb(n = 3000): Float32Array {
+    const p = new Float32Array(n * 3);
+    let s = 11;
+    const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647 - 0.5; };
+    for (let i = 0; i < n; i++) { p[i * 3] = rnd() * 50; p[i * 3 + 1] = rnd() * 8; p[i * 3 + 2] = rnd() * 30; }
+    return p;
+  }
+  const fillOf = (pos: Float32Array, h: { target: [number, number, number]; dist: number; yaw: number; pitch: number }, w: number, hh: number) => {
+    const b = screenBox(pos, h, h.yaw, h.pitch, w, hh);
+    return { w: (b.x1 - b.x0) / w, h: (b.y1 - b.y0) / hh };
+  };
+
+  it('keeps the default angle when no other is ≥ 10 % tighter (a round cloud)', () => {
+    const ball = new Float32Array(3000 * 3);
+    let s = 5;
+    const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647 - 0.5; };
+    for (let i = 0; i < 3000; i++) {
+      let x = 0, y = 0, z = 0;
+      do { x = rnd() * 2; y = rnd() * 2; z = rnd() * 2; } while (x * x + y * y + z * z > 1);
+      ball[i * 3] = x * 20; ball[i * 3 + 1] = y * 20; ball[i * 3 + 2] = z * 20;
+    }
+    const h = homePose(ball, { fovDeg: FOV, width: 1440, height: 812 })!;
+    expect([h.yaw, h.pitch]).toEqual([HOME_YAW, HOME_PITCH]);
+  });
+
+  it('the web fills ~80 % of the viewport on its tight axis (desktop and phone)', () => {
+    const pos = wideWeb();
+    for (const [w, hh] of [[1440, 812], [390, 640]]) {
+      const h = homePose(pos, { fovDeg: FOV, width: w, height: hh })!;
+      const f = fillOf(pos, h, w, hh);
+      // the 99th-percentile fit targets 80 %; the full min–max box (strays included) lands a bit past it
+      expect(Math.max(f.w, f.h)).toBeGreaterThan(0.72);
+      expect(Math.max(f.w, f.h)).toBeLessThan(0.92);
+    }
+  });
+
+  it('a portrait phone turns / raises the view when that frames the web ≥ 10 % tighter', () => {
+    const pos = wideWeb();
+    const def = fitView(pos, null, HOME_YAW, HOME_PITCH, { fovDeg: FOV, width: 390, height: 640, fill: 0.8, percentile: 0.99 })!;
+    const h = homePose(pos, { fovDeg: FOV, width: 390, height: 640 })!;
+    expect(h.dist).toBeLessThanOrEqual(def.dist * 0.9);
+    expect(h.yaw !== HOME_YAW || h.pitch !== HOME_PITCH).toBe(true);
+    const f = fillOf(pos, h, 390, 640);
+    expect(f.w * f.h).toBeGreaterThan(0.3); // a real frame, not a thin strip
+  });
+
+  it('deterministic; null on no points', () => {
+    const pos = wideWeb(500);
+    expect(homePose(pos, { fovDeg: FOV, width: 390, height: 640 })).toEqual(homePose(pos, { fovDeg: FOV, width: 390, height: 640 }));
+    expect(homePose(new Float32Array(0), { fovDeg: FOV, width: 390, height: 640 })).toBeNull();
+  });
+});
+
+describe('nearestAngle', () => {
+  it('Home never spins a full lap', () => {
+    expect(nearestAngle(-1.5, 4.71)).toBeCloseTo(4.71 - 2 * Math.PI, 9);
+    expect(nearestAngle(0.2, 0)).toBeCloseTo(0, 9);
+    expect(nearestAngle(13, 0.5)).toBeCloseTo(0.5 + 4 * Math.PI, 9);
+    for (const [a, b] of [[0, 3], [7, -7], [-20, 1]]) expect(Math.abs(nearestAngle(a, b) - a)).toBeLessThanOrEqual(Math.PI + 1e-9);
   });
 });
