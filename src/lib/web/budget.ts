@@ -71,11 +71,15 @@ export class Governor {
     this.o = { ...GOVERNOR_DEFAULTS, ...opts };
   }
 
-  /** Feed one frame interval (ms). Returns true when quality just stepped down. */
-  sample(intervalMs: number): boolean {
+  /**
+   * Feed one rendered frame's interval (ms). `targetMs` is the interval the loop is
+   * paced to (33.3 under a 30 fps cap): intervals are normalised to a 60 fps scale,
+   * so a capped loop running on time never reads as slow. Returns true on a step down.
+   */
+  sample(intervalMs: number, targetMs = 1000 / 60): boolean {
     if (!(intervalMs > 0) || intervalMs > this.o.gapMs) return false;
     if (this.state.steps >= this.o.maxSteps) return false;
-    this.buf.push(intervalMs);
+    this.buf.push(intervalMs * ((1000 / 60) / Math.max(1000 / 60, targetMs)));
     if (this.buf.length < this.o.windowFrames) return false;
     const sorted = this.buf.slice().sort((a, b) => a - b);
     const p75 = sorted[Math.min(sorted.length - 1, Math.ceil(0.75 * sorted.length) - 1)];

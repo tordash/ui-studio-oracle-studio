@@ -18,10 +18,10 @@ import type { GalaxyData } from '../../lib/galaxy/mapping';
 import { galaxyTypeColor, hexToRgb01, STATE_HIDDEN, STATE_MATCH } from '../../lib/galaxy/mapping';
 import type { GalaxyCluster } from '../../lib/galaxy/clusters';
 import { ScreenGrid, projectPoints } from '../../lib/galaxy/pick-grid';
-import { mulberry32 } from '../../lib/galaxy/clusters';
 import { frameBounds, frameDistance } from '../../lib/galaxy/frame';
 import { declutterLabels } from '../../lib/galaxy/labels';
 import { bindRenderGate, cappedPixelRatio, GLOW_POINT_FRAG } from '../../lib/three';
+import { createBackdrop } from '../../lib/three/backdrop';
 
 /** Thai-capable system font stack — no webfont, so canvas labels never race a font load. */
 export const GALAXY_FONT_STACK =
@@ -31,7 +31,6 @@ const FOV = 50;
 const STAR_WORLD_SIZE = 0.17;
 const MIN_DIST = 1.6;
 const MAX_DIST = 90;
-const BACKDROP_COUNT = 1400;
 
 // ── Shaders ─────────────────────────────────────────────────────────────
 
@@ -114,35 +113,6 @@ const HALO_FRAG = /* glsl */ `
     float a = ring * (vKind > 0.5 ? 0.95 : 0.7) + outer + bloom;
     vec3 col = mix(vColor, vec3(1.0), 0.35 + ring * 0.3);
     gl_FragColor = vec4(col, a);
-  }
-`;
-
-const BACKDROP_VERT = /* glsl */ `
-  attribute float aSize;
-  attribute float aAlpha;
-  attribute vec3 aColor;
-  uniform float uPixelRatio;
-  uniform float uIntro;
-  varying float vAlpha;
-  varying vec3 vColor;
-  void main() {
-    // far layer follows the camera at 92% → only 8% of camera translation shows: parallax depth
-    vec3 p = position + cameraPosition * 0.92;
-    vec4 mv = modelViewMatrix * vec4(p, 1.0);
-    gl_PointSize = aSize * uPixelRatio;
-    gl_Position = projectionMatrix * mv;
-    vAlpha = aAlpha * uIntro;
-    vColor = aColor;
-  }
-`;
-
-const BACKDROP_FRAG = /* glsl */ `
-  varying float vAlpha;
-  varying vec3 vColor;
-  void main() {
-    float d = length(gl_PointCoord - 0.5) * 2.0;
-    if (d > 1.0) discard;
-    gl_FragColor = vec4(vColor, (1.0 - d) * vAlpha);
   }
 `;
 
@@ -390,37 +360,10 @@ export class GalaxyEngine {
     this.halo.renderOrder = 3;
     this.scene.add(this.halo);
 
-    // ── backdrop: far star-field layer (decorative only) ──
-    const rand = mulberry32(20261018);
-    const bp = new Float32Array(BACKDROP_COUNT * 3);
-    const bs = new Float32Array(BACKDROP_COUNT);
-    const ba = new Float32Array(BACKDROP_COUNT);
-    const bc = new Float32Array(BACKDROP_COUNT * 3);
-    for (let i = 0; i < BACKDROP_COUNT; i++) {
-      const u = rand() * 2 - 1, th = rand() * Math.PI * 2, r = 140 + rand() * 120;
-      const s = Math.sqrt(1 - u * u);
-      bp[i * 3] = r * s * Math.cos(th); bp[i * 3 + 1] = r * u; bp[i * 3 + 2] = r * s * Math.sin(th);
-      bs[i] = 0.8 + rand() * rand() * 2.2;
-      ba[i] = 0.12 + rand() * 0.32;
-      const warm = rand() < 0.18;
-      bc[i * 3] = warm ? 1.0 : 0.78; bc[i * 3 + 1] = warm ? 0.88 : 0.85; bc[i * 3 + 2] = warm ? 0.75 : 1.0;
-    }
-    const bgeo = new THREE.BufferGeometry();
-    bgeo.setAttribute('position', new THREE.BufferAttribute(bp, 3));
-    bgeo.setAttribute('aSize', new THREE.BufferAttribute(bs, 1));
-    bgeo.setAttribute('aAlpha', new THREE.BufferAttribute(ba, 1));
-    bgeo.setAttribute('aColor', new THREE.BufferAttribute(bc, 3));
-    this.backdropMat = new THREE.ShaderMaterial({
-      vertexShader: BACKDROP_VERT,
-      fragmentShader: BACKDROP_FRAG,
-      uniforms: { uPixelRatio: { value: this.pixelRatio }, uIntro: { value: 1 } },
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    this.backdrop = new THREE.Points(bgeo, this.backdropMat);
-    this.backdrop.frustumCulled = false;
-    this.backdrop.renderOrder = 0;
+    // ── backdrop: far star-field layer (decorative only; shared, lib/three/backdrop.ts) ──
+    const bd = createBackdrop(this.pixelRatio);
+    this.backdrop = bd.points;
+    this.backdropMat = bd.material;
     this.scene.add(this.backdrop);
 
     // ── nebulae + labels (≤12 each) ──

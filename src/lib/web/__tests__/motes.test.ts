@@ -220,6 +220,13 @@ describe('Governor', () => {
     expect(slow(g, 900, 8)).toBe(0); // fast frames never step back up
     expect(g.state).toMatchObject({ steps: 3, moteScale: 0.5, pulseScale: 0.5, dprDelta: -0.25 });
   });
+  it('a 30 fps-capped loop running on time is not slow; one missing its 33 ms budget is', () => {
+    const g = new Governor();
+    for (let i = 0; i < 900; i++) g.sample(34, 1000 / 30);
+    expect(g.state.steps).toBe(0);
+    for (let i = 0; i < 90; i++) g.sample(60, 1000 / 30);
+    expect(g.state.steps).toBe(1);
+  });
   it('fast frames and pauses do not step', () => {
     const g = new Governor();
     expect(slow(g, 900, 16)).toBe(0);
