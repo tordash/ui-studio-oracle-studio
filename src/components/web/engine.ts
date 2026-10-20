@@ -29,7 +29,11 @@ import { fitSphereDistance } from '../../lib/galaxy/frame';
 import { DRILL_SCALE } from '../../lib/web/layout';
 import type { WebScene } from '../../lib/web/scene';
 import { starWorldPos } from '../../lib/web/scene';
-import { STAR_VERT, CORE_VERT, HALO_VERT, HALO_FRAG } from './shaders';
+import { buildArcs, buildPulses, ribbonStrip } from '../../lib/web/arcs';
+import type { ArcEdge, ArcSet, PulseSet } from '../../lib/web/arcs';
+import { drillDrawRange, overviewDrawCount } from '../../lib/web/motes';
+import type { MoteBuffers, MoteSource } from '../../lib/web/motes';
+import { STAR_VERT, CORE_VERT, HALO_VERT, HALO_FRAG, RIBBON_VERT, LINE_FRAG, PULSE_VERT, MOTE_VERT } from './shaders';
 
 export const WEB_FOV = 50;
 export const STAR_WORLD_SIZE = 0.17;
@@ -62,6 +66,15 @@ export interface WebEngineCallbacks {
 export interface WebEngineOptions {
   reducedMotion: boolean;
   tier: GpuTier;
+}
+
+/** Everything the engine draws, prepared off the GPU (lib/web). */
+export interface WebEngineData {
+  scene: WebScene;
+  /** inter-cluster links in InterResult order — instance i is edge i everywhere in the UI */
+  edges: readonly ArcEdge[];
+  motes: MoteBuffers | null;
+  moteSource: MoteSource;
 }
 
 type U = { value: number };
@@ -125,6 +138,19 @@ export class WebEngine {
   protected backdrop: THREE.Points;
   protected backdropMat: THREE.ShaderMaterial;
 
+  // links (T10): instanced ribbons + flowing pulses
+  protected arcs: ArcSet;
+  protected edges: readonly ArcEdge[];
+  protected ribbons: THREE.Mesh;
+  protected pulseSet: PulseSet;
+  protected pulses: THREE.Points;
+  // chunk motes (T10): one attribute set, two draw orders
+  protected moteData: MoteBuffers | null;
+  protected moteSource: MoteSource;
+  protected motesOverview: THREE.Points | null = null;
+  protected motesDrill: THREE.Points | null = null;
+  protected moteMat: THREE.ShaderMaterial | null = null;
+
   // camera
   protected rig: Rig;
   protected home = { target: [0, 0, 0] as Vec3, dist: 40, yaw: 0, pitch: 0.32 };
@@ -162,9 +188,13 @@ export class WebEngine {
   protected ro: ResizeObserver | null = null;
   protected debugToken: Window['__web'] | undefined;
 
-  constructor(container: HTMLElement, sc: WebScene, cb: WebEngineCallbacks, opts: WebEngineOptions) {
+  constructor(container: HTMLElement, data: WebEngineData, cb: WebEngineCallbacks, opts: WebEngineOptions) {
+    const sc = data.scene;
     this.container = container;
     this.sc = sc;
+    this.edges = data.edges;
+    this.moteData = data.motes;
+    this.moteSource = data.moteSource;
     this.cb = cb;
     this.reduced = opts.reducedMotion;
     this.tier = opts.tier;
@@ -244,6 +274,19 @@ export class WebEngine {
     this.backdropMat = bd.material;
     this.scene.add(this.backdrop);
 
+    // ── inter-cluster links: ONE instanced ribbon mesh + ONE pulse Points ──
+    const b0 = sc.bounds;
+    this.arcs = buildArcs(this.edges, sc.centres, sc.coreColor, sc.unsorted, [b0.cx, b0.cy, b0.cz]);
+    this.ribbons = this.buildRibbons(this.arcs);
+    this.scene.add(this.ribbons);
+    this.pulseSet = buildPulses(this.arcs, this.edges, this.tier, this.budget.interPulses);
+    this.pulses = this.buildPulsePoints(this.pulseSet);
+    this.scene.add(this.pulses);
+
+    // ── chunk motes (A5): overview = global permutation, drill = cluster slice ──
+    if (this.moteData && this.moteData.count > 0) this.buildMotes(this.moteData);
+    this.applyBudgets();
+
     // ── camera home: fit the laid-out web ──
     const b = sc.bounds;
     this.home.target = [b.cx, b.cy, b.cz];
@@ -273,6 +316,7 @@ export class WebEngine {
     this.reduced = reduced;
     this.U.uMotion.value = reduced ? 0 : 1;
     if (reduced) { this.finishIntro(); snapRig(this.rig); }
+    this.applyBudgets();
     this.requestRender();
   }
 
@@ -354,11 +398,99 @@ export class WebEngine {
     });
   }
 
+  protected buildRibbons(arcs: ArcSet): THREE.Mesh {
+    const strip = ribbonStrip();
+    const g = new THREE.InstancedBufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(strip.t.length * 3), 3));
+    g.setAttribute('aT', new THREE.BufferAttribute(strip.t, 1));
+    g.setAttribute('aSide', new THREE.BufferAttribute(strip.side, 1));
+    g.setIndex(new THREE.BufferAttribute(strip.index, 1));
+    g.setAttribute('aP0', new THREE.InstancedBufferAttribute(arcs.p0, 3));
+    g.setAttribute('aP2', new THREE.InstancedBufferAttribute(arcs.p2, 3));
+    g.setAttribute('aCtrl', new THREE.InstancedBufferAttribute(arcs.ctrl, 3));
+    g.setAttribute('aStyle', new THREE.InstancedBufferAttribute(arcs.style, 4));
+    g.setAttribute('aEnds', new THREE.InstancedBufferAttribute(arcs.ends, 2));
+    g.setAttribute('aColA', new THREE.InstancedBufferAttribute(arcs.colA, 3));
+    g.setAttribute('aColB', new THREE.InstancedBufferAttribute(arcs.colB, 3));
+    g.instanceCount = arcs.count;
+    const m = new THREE.ShaderMaterial({
+      vertexShader: RIBBON_VERT, fragmentShader: LINE_FRAG, uniforms: this.U,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(g, m);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 2;
+    mesh.visible = arcs.count > 0;
+    return mesh;
+  }
+
+  protected buildPulsePoints(p: PulseSet): THREE.Points {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(p.p0, 3));
+    g.setAttribute('aP0', new THREE.BufferAttribute(p.p0, 3));
+    g.setAttribute('aP2', new THREE.BufferAttribute(p.p2, 3));
+    g.setAttribute('aCtrl', new THREE.BufferAttribute(p.ctrl, 3));
+    g.setAttribute('aPulse', new THREE.BufferAttribute(p.pulse, 4));
+    g.setAttribute('aEnds', new THREE.BufferAttribute(p.ends, 2));
+    g.setAttribute('aColor', new THREE.BufferAttribute(p.color, 3));
+    const pts = new THREE.Points(g, this.pointsMaterial(PULSE_VERT));
+    pts.frustumCulled = false;
+    pts.renderOrder = 3;
+    return pts;
+  }
+
+  protected buildMotes(m: MoteBuffers) {
+    const centre = new THREE.BufferAttribute(m.centre, 3);
+    const attrs: [string, THREE.BufferAttribute][] = [
+      ['position', centre],
+      ['aCentre', centre],
+      ['aOff', new THREE.BufferAttribute(m.offset, 3)],
+      ['aStar', new THREE.BufferAttribute(m.star, 4)],
+      ['aOrbit', new THREE.BufferAttribute(m.orbit, 4)],
+    ];
+    this.moteMat = this.pointsMaterial(MOTE_VERT);
+    // overview: indexed by the global seeded permutation → a draw-range prefix is a uniform sample
+    const go = new THREE.BufferGeometry();
+    for (const [n, a] of attrs) go.setAttribute(n, a);
+    go.setIndex(new THREE.BufferAttribute(m.overviewIndex, 1));
+    this.motesOverview = new THREE.Points(go, this.moteMat);
+    // drill: the same attributes, non-indexed; draw range = the drilled cluster's (shuffled) slice
+    const gd = new THREE.BufferGeometry();
+    for (const [n, a] of attrs) gd.setAttribute(n, a);
+    this.motesDrill = new THREE.Points(gd, this.moteMat);
+    for (const p of [this.motesOverview, this.motesDrill]) {
+      p.frustumCulled = false;
+      p.renderOrder = 5;
+      this.scene.add(p);
+    }
+    this.motesDrill.visible = false;
+  }
+
+  /** Tier caps × governor scales → draw ranges and visibility. */
+  protected applyBudgets() {
+    const g = this.governor.state;
+    const pulseCount = Math.min(this.pulseSet.count, Math.floor(this.budget.interPulses * g.pulseScale));
+    this.pulses.geometry.setDrawRange(0, pulseCount);
+    this.pulses.visible = !this.reduced && pulseCount > 0;
+    const m = this.moteData;
+    if (m && this.motesOverview && this.motesDrill) {
+      this.motesOverview.geometry.setDrawRange(0, overviewDrawCount(m.count, this.budget.motes, g.moteScale));
+      const dc = this.U.uDrillCluster.value;
+      if (dc >= 0) {
+        const r = drillDrawRange(m.slices, dc, this.budget.motes, g.moteScale);
+        this.motesDrill.geometry.setDrawRange(r.start, r.count);
+      }
+    }
+  }
+
   protected disposeObjects() {
-    for (const o of [this.stars, this.cores, this.halo, this.backdrop]) {
+    for (const o of [this.stars, this.cores, this.halo, this.backdrop, this.ribbons, this.pulses]) {
       o.geometry.dispose();
       (o.material as THREE.Material).dispose();
     }
+    this.motesOverview?.geometry.dispose();
+    this.motesDrill?.geometry.dispose();
+    this.moteMat?.dispose();
   }
 
   protected fitHomeDistance(): number {
@@ -426,8 +558,10 @@ export class WebEngine {
     this.raf = requestAnimationFrame(this.frameLoop);
   };
 
-  /** Extra per-frame work for subclasses/stages; returns true while it still animates. */
+  /** Per-frame work besides the camera; returns true while something still animates. */
   protected stepExtras(_dt: number): boolean {
+    this.U.uLinkAlpha.value = 1 - this.U.uDrill.value;
+    this.ribbons.visible = this.arcs.count > 0 && this.U.uLinkAlpha.value > 0.003;
     return false;
   }
 
@@ -485,6 +619,7 @@ export class WebEngine {
 
   /** Governor stepped down: re-apply DPR (motes / pulses are scaled by the stage that owns them). */
   protected applyGovernor() {
+    this.applyBudgets();
     const pr = effectiveDpr(window.devicePixelRatio || 1, this.budget, this.governor.state);
     if (pr !== this.pixelRatio) {
       this.pixelRatio = pr;
@@ -751,7 +886,16 @@ export class WebEngine {
 
   /** Stage-specific counters for info(); later stages extend it. */
   protected counters() {
-    return { interLinks: 0, pulses: 0, motesTotal: 0, motesDrawn: 0, intraSegments: 0, intraPulses: 0, moteSource: 'none' };
+    const drawn = (p: THREE.Points | null) => (p && p.visible ? Math.min(p.geometry.drawRange.count, this.moteData?.count ?? 0) : 0);
+    return {
+      interLinks: this.arcs.count,
+      pulses: this.pulses.visible ? Math.min(this.pulses.geometry.drawRange.count, this.pulseSet.count) : 0,
+      motesTotal: this.moteData?.count ?? 0,
+      motesDrawn: drawn(this.motesOverview) + drawn(this.motesDrill),
+      intraSegments: 0,
+      intraPulses: 0,
+      moteSource: this.moteSource,
+    };
   }
 
   protected exposeDebug() {
