@@ -83,3 +83,18 @@ export function mapSimilar(results: readonly SimilarResult[], ctx: RelatedContex
 export function inClusterStars(rows: readonly RelatedRow[], cluster: number): number[] {
   return rows.filter(r => r.star >= 0 && r.cluster === cluster).map(r => r.star);
 }
+
+/** /api/similar normally answers in ~0.1–0.4 s; past this the list shows "unavailable" + Try again. */
+export const RELATED_TIMEOUT_MS = 12000;
+
+export class RelatedTimeoutError extends Error {
+  constructor(ms: number) { super(`Related timed out after ${ms} ms`); this.name = 'RelatedTimeoutError'; }
+}
+
+/** Settle `p`, or reject after `ms` — a stalled request must never leave Related on skeletons. */
+export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new RelatedTimeoutError(ms)), ms);
+    p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+  });
+}

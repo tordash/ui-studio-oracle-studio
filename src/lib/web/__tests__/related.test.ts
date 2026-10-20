@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { mapSimilar, inClusterStars } from '../related';
+import { mapSimilar, inClusterStars, withTimeout, RelatedTimeoutError, RELATED_TIMEOUT_MS } from '../related';
 import type { RelatedContext } from '../related';
 import { prepareGalaxy } from '../../galaxy/mapping';
 import { clusterKey } from '../keys';
@@ -67,5 +67,22 @@ describe('mapSimilar', () => {
   it('inClusterStars feeds the dotted vector layer', () => {
     const rows = mapSimilar([{ id: 'a-som' }, { id: 'c' }, { id: 'nope', source_file: 'zz.md' }], ctx);
     expect(inClusterStars(rows, 0)).toEqual([1]);
+  });
+});
+
+describe('withTimeout (Related never sits on skeletons)', () => {
+  it('passes a value or an error through', async () => {
+    expect(await withTimeout(Promise.resolve(7), 50)).toBe(7);
+    await expect(withTimeout(Promise.reject(new Error('boom')), 50)).rejects.toThrow('boom');
+  });
+  it('rejects a stalled request with a RelatedTimeoutError', async () => {
+    const t0 = performance.now();
+    const p = withTimeout(new Promise<number>(() => { /* never settles */ }), 30);
+    await expect(p).rejects.toBeInstanceOf(RelatedTimeoutError);
+    expect(performance.now() - t0).toBeLessThan(1000);
+  });
+  it('the cap is generous next to a normal /api/similar (0.1–0.4 s) but finite', () => {
+    expect(RELATED_TIMEOUT_MS).toBeGreaterThanOrEqual(5000);
+    expect(RELATED_TIMEOUT_MS).toBeLessThanOrEqual(20000);
   });
 });

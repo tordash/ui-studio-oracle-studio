@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { loadDocBody } from '../doc-body';
+import { loadDocBody, loadEmbeddedBody, DOC_BODY_TIMEOUT_MS } from '../doc-body';
 
 class HttpErr extends Error {
   status: number;
@@ -71,5 +71,59 @@ describe('loadDocBody', () => {
     });
     expect(r.kind).toBe('not-indexed');
     expect(called).toBe(false);
+  });
+});
+
+describe('loadEmbeddedBody (file first)', () => {
+  const src = { path: '../Projects/marketing-agency-team/brain/Episodic/x.md', project: 'github.com/tordash/marketing-agency-team' };
+
+  it('reads the map record\'s file and never asks /api/doc (no FTS scan to stall /api/similar)', async () => {
+    let docCalls = 0;
+    const seen: [string, string | undefined][] = [];
+    const r = await loadEmbeddedBody<Doc>('learning_../Projects/x_0', src, {
+      getFile: async (p, proj) => { seen.push([p, proj]); return { content: '# hi' }; },
+      getDoc: async id => { docCalls++; return { id, content: 'row' }; },
+      isNotFound, isHttpError, notIndexed: new Set(),
+    });
+    expect(r).toEqual({ kind: 'file', content: '# hi' });
+    expect(seen).toEqual([[src.path, src.project]]);
+    expect(docCalls).toBe(0);
+  });
+
+  it('falls back to the doc row when the file is missing, empty, throws or hangs', async () => {
+    const cases: (() => Promise<{ content: string; error?: string }>)[] = [
+      async () => ({ content: '', error: 'File not found' }),
+      async () => ({ content: '' }),
+      async () => { throw new TypeError('Failed to fetch'); },
+      () => new Promise(() => { /* never settles */ }),
+    ];
+    for (const getFile of cases) {
+      const r = await loadEmbeddedBody<Doc>('a', src, {
+        getFile, getDoc: async id => ({ id, content: 'indexed' }), isNotFound, isHttpError, notIndexed: new Set(), fileTimeoutMs: 30,
+      });
+      expect(r).toEqual({ kind: 'doc', doc: { id: 'a', content: 'indexed' } });
+    }
+  });
+
+  it('no source path → straight to the doc row; both missing → not-indexed', async () => {
+    let fileCalls = 0;
+    const r = await loadEmbeddedBody<Doc>('vec_9', null, {
+      getFile: async () => { fileCalls++; return { content: 'x' }; },
+      getDoc: async () => { throw new HttpErr(404); }, isNotFound, isHttpError, notIndexed: new Set(),
+    });
+    expect(r).toEqual({ kind: 'not-indexed' });
+    expect(fileCalls).toBe(0);
+  });
+
+  it('file gone + doc index down → unreachable (the sheet shows Try again)', async () => {
+    const r = await loadEmbeddedBody<Doc>('b', src, {
+      getFile: async () => ({ content: '', error: 'Cannot connect to server' }),
+      getDoc: async () => { throw new TypeError('Failed to fetch'); }, isNotFound, isHttpError, notIndexed: new Set(),
+    });
+    expect(r).toEqual({ kind: 'unreachable', reason: 'network' });
+  });
+
+  it('the doc-row cap sits above the measured 5.5 s cold /api/doc scan', () => {
+    expect(DOC_BODY_TIMEOUT_MS).toBeGreaterThan(5500);
   });
 });

@@ -8,7 +8,7 @@ import { SidebarLayout } from '../components/SidebarLayout';
 import { getDocDisplayInfo } from '../utils/docDisplay';
 import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
-import { loadDocBody } from '../lib/galaxy/doc-body';
+import { loadEmbeddedBody, DOC_BODY_SLOW_MS } from '../lib/galaxy/doc-body';
 
 /** Shared markdown prose styles (page + embedded sheet). */
 const DOC_PROSE = 'text-text-primary [&_h1]:text-accent [&_h1]:mt-8 [&_h1]:mb-4 [&_h1]:font-semibold [&_h1]:text-[28px] [&_h1:first-child]:mt-0 [&_h2]:text-accent [&_h2]:mt-8 [&_h2]:mb-4 [&_h2]:font-semibold [&_h2]:text-2xl [&_h2:first-child]:mt-0 [&_h3]:text-accent [&_h3]:mt-8 [&_h3]:mb-4 [&_h3]:font-semibold [&_h3]:text-xl [&_h3:first-child]:mt-0 [&_p]:mb-4 [&_code]:bg-[rgba(167,139,250,0.15)] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[15px] [&_code]:text-[#e9d5ff] [&_pre]:bg-[rgba(0,0,0,0.4)] [&_pre]:border [&_pre]:border-border [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:my-4 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-sm [&_pre_code]:text-white/85 [&_ul]:my-4 [&_ul]:pl-6 [&_ol]:my-4 [&_ol]:pl-6 [&_li]:mb-2 [&_strong]:text-accent [&_strong]:font-semibold [&_a]:text-accent [&_a]:underline [&_a:hover]:text-[#c4b5fd] [&_blockquote]:border-l-[3px] [&_blockquote]:border-l-accent [&_blockquote]:my-4 [&_blockquote]:pl-4 [&_blockquote]:text-text-secondary [&_blockquote]:italic [&_table]:w-full [&_table]:border-collapse [&_table]:my-4 [&_table]:text-[15px] [&_th]:border [&_th]:border-border [&_th]:px-4 [&_th]:py-3 [&_th]:text-left [&_th]:bg-[rgba(167,139,250,0.15)] [&_th]:text-accent [&_th]:font-semibold [&_td]:border [&_td]:border-border [&_td]:px-4 [&_td]:py-3 [&_td]:text-left [&_tr:nth-child(even)]:bg-white/[0.02] [&_hr]:border-none [&_hr]:border-t [&_hr]:border-t-border [&_hr]:my-6 [&_img]:max-w-full [&_img]:rounded-lg [&_img]:my-4';
@@ -33,7 +33,10 @@ interface DocDetailViewProps {
    * instead of the full-page "Document not found" screen.
    */
   embedded?: boolean;
-  /** Embedded only: file to try when /api/doc/:id has no row for this id. */
+  /**
+   * Embedded only: the map record's file. Read FIRST (/api/file, ~0.1 s); /api/doc/:id
+   * (a slow FTS scan that also stalls other arra requests) is only asked when it misses.
+   */
   fallbackSource?: { path: string; project?: string | null };
 }
 
@@ -49,7 +52,9 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
   const [showRawModal, setShowRawModal] = useState(false);
   const [rawContent, setRawContent] = useState<string | null>(null);
   const [rawError, setRawError] = useState<string | null>(null);
-  const [fallbackContent, setFallbackContent] = useState<string | null>(null);
+  // Embedded only: the md read straight from the map record's file (no doc row needed)
+  const [embeddedFile, setEmbeddedFile] = useState<string | null>(null);
+  const [slow, setSlow] = useState(false);
   // Embedded only: why the body has no doc row ('not-indexed' = 404, 'unreachable' = rejected/timeout/5xx)
   const [embeddedMiss, setEmbeddedMiss] = useState<'not-indexed' | 'unreachable' | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -102,8 +107,10 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
     setFullContent(null); // Reset when doc changes
     setFileNotFound(false);
     setRawError(null);
+    // embedded: loadEmbeddedBody already tried this file before it fell back to the doc row
+    if (embedded && fallbackSource?.path) { if (doc) setFileNotFound(true); return; }
     loadFullContent();
-  }, [doc]);
+  }, [doc, embedded, fallbackSource?.path]);
 
   // Load neighbors (prev/next documents)
   useEffect(() => {
@@ -139,7 +146,10 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
     loadNeighbors();
   }, [doc, location.state, embedded]);
 
-  // Embedded (Galaxy sheet): settle into doc / not-indexed / unreachable — never a stuck skeleton.
+  // Embedded (Galaxy / Knowledge Web sheet): file first, then the doc row; settles into
+  // file / doc / not-indexed / unreachable — never a stuck skeleton.
+  const fbPath = fallbackSource?.path;
+  const fbProject = fallbackSource?.project;
   useEffect(() => {
     if (!embedded) return;
     let cancelled = false;
@@ -147,22 +157,27 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
     setError(null);
     setEmbeddedMiss(null);
     setDoc(null);
+    setEmbeddedFile(null);
+    setSlow(false);
+    const slowTimer = setTimeout(() => { if (!cancelled) setSlow(true); }, DOC_BODY_SLOW_MS);
     const decoded = id ? decodeURIComponent(id) : '';
-    loadDocBody(decoded, {
+    loadEmbeddedBody(decoded, fbPath ? { path: fbPath, project: fbProject } : null, {
       getDoc,
+      getFile,
       isNotFound: e => e instanceof ApiError && e.status === 404,
       isHttpError: e => e instanceof ApiError,
     }).then(r => {
       if (cancelled) return;
-      if (r.kind === 'doc') setDoc(r.doc);
+      if (r.kind === 'file') setEmbeddedFile(r.content);
+      else if (r.kind === 'doc') setDoc(r.doc);
       else {
         setEmbeddedMiss(r.kind);
         setError(r.kind === 'not-indexed' ? 'Document not found' : 'Failed to load document');
       }
       setLoading(false);
     });
-    return () => { cancelled = true; };
-  }, [id, embedded, retryNonce]);
+    return () => { cancelled = true; clearTimeout(slowTimer); };
+  }, [id, embedded, retryNonce, fbPath, fbProject]);
 
   useEffect(() => {
     if (embedded) return;
@@ -201,16 +216,6 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
       setLoading(false);
     }
   }
-
-  // Embedded: the id may be a vector-only id with no doc row — try the source file instead
-  useEffect(() => {
-    if (!embedded || embeddedMiss !== 'not-indexed' || !fallbackSource?.path) return;
-    let cancelled = false;
-    getFile(fallbackSource.path, fallbackSource.project ?? undefined)
-      .then(f => { if (!cancelled && !f.error && f.content) setFallbackContent(f.content); })
-      .catch(() => { /* stays on the calm note */ });
-    return () => { cancelled = true; };
-  }, [embedded, embeddedMiss, fallbackSource?.path, fallbackSource?.project]);
 
   // Show raw file in modal
   async function handleShowRawFile(e: React.MouseEvent) {
@@ -321,13 +326,31 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
     return { when, what, how };
   }
 
-  if (embedded && loading && !doc) {
+  if (embedded && loading && !doc && embeddedFile == null) {
     return (
       <div className="flex flex-col gap-3 py-2" aria-busy="true">
         {[92, 100, 84, 96, 70].map((w, i) => (
           <div key={i} className="h-3 rounded bg-white/[0.06] animate-pulse" style={{ width: `${w}%` }} />
         ))}
+        {slow && (
+          <p className="mt-1 text-[13px] leading-relaxed text-text-secondary" role="status">
+            Still loading — the doc index is slow right now.
+          </p>
+        )}
       </div>
+    );
+  }
+
+  if (embedded && embeddedFile != null) {
+    const decoded = id ? decodeURIComponent(id) : '';
+    return (
+      <EmbeddedArticle
+        markdown={stripFrontmatter(embeddedFile)}
+        sourceFile={fbPath ?? ''}
+        project={fbProject}
+        docId={decoded}
+        indexedTextOnly={false}
+      />
     );
   }
 
@@ -353,13 +376,8 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
         <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-[13px] leading-relaxed text-text-secondary">
           <span className="text-text-primary font-medium">Full text not in the doc index.</span>{' '}
           This star comes from the vector index; its id has no row in the current document table
-          {fallbackContent ? ', so the source file is shown below.' : '.'}
+          {fbPath ? ', and its source file isn’t readable from this server.' : '.'}
         </div>
-        {fallbackContent && (
-          <div className={`doc-content ${DOC_PROSE} text-[15px] leading-[1.75]`}>
-            <Markdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(fallbackContent)}</Markdown>
-          </div>
-        )}
       </div>
     );
   }
@@ -385,26 +403,14 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
   const { when, what, how } = parseMetadata(doc);
 
   if (embedded) {
-    const info = getDocDisplayInfo(doc.source_file, doc.project);
     return (
-      <article className="flex flex-col gap-6">
-        <div className={`doc-content ${DOC_PROSE} text-[15px] leading-[1.75] [&_h1]:!text-xl [&_h2]:!text-lg [&_h3]:!text-base [&_h1]:!mt-6 [&_h2]:!mt-6 [&_h3]:!mt-5`}>
-          <Markdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(fullContent || doc.content)}</Markdown>
-        </div>
-        <footer className="flex flex-wrap items-center gap-3 pt-4 border-t border-border">
-          {fileNotFound && <span className="text-xs text-[#f59e0b]">local file not found — showing indexed text</span>}
-          {info.fileUrl && (
-            <a href={info.fileUrl} target="_blank" rel="noopener noreferrer"
-              className="text-xs text-accent no-underline px-2.5 py-1 bg-[rgba(167,139,250,0.1)] rounded transition-colors duration-200 hover:bg-[rgba(167,139,250,0.2)]">
-              View on GitHub ↗
-            </a>
-          )}
-          <Link to={`/doc/${encodeURIComponent(doc.id)}`}
-            className="text-xs text-text-secondary no-underline px-2.5 py-1 rounded border border-white/[0.08] transition-colors duration-200 hover:border-accent hover:text-accent">
-            Open full page →
-          </Link>
-        </footer>
-      </article>
+      <EmbeddedArticle
+        markdown={stripFrontmatter(fullContent || doc.content)}
+        sourceFile={doc.source_file}
+        project={doc.project}
+        docId={doc.id}
+        indexedTextOnly={fileNotFound}
+      />
     );
   }
 
@@ -564,5 +570,36 @@ export function DocDetailView({ id, embedded = false, fallbackSource }: DocDetai
       )}
     </article>
     </SidebarLayout>
+  );
+}
+
+/** Embedded sheet body: the md + GitHub / full-page links (from a file read or the doc row). */
+function EmbeddedArticle({ markdown, sourceFile, project, docId, indexedTextOnly }: {
+  markdown: string;
+  sourceFile: string;
+  project?: string | null;
+  docId: string;
+  indexedTextOnly: boolean;
+}) {
+  const info = getDocDisplayInfo(sourceFile, project);
+  return (
+    <article className="flex flex-col gap-6">
+      <div className={`doc-content ${DOC_PROSE} text-[15px] leading-[1.75] [&_h1]:!text-xl [&_h2]:!text-lg [&_h3]:!text-base [&_h1]:!mt-6 [&_h2]:!mt-6 [&_h3]:!mt-5`}>
+        <Markdown remarkPlugins={[remarkGfm]}>{markdown}</Markdown>
+      </div>
+      <footer className="flex flex-wrap items-center gap-3 pt-4 border-t border-border">
+        {indexedTextOnly && <span className="text-xs text-[#f59e0b]">local file not found — showing indexed text</span>}
+        {info.fileUrl && (
+          <a href={info.fileUrl} target="_blank" rel="noopener noreferrer"
+            className="text-xs text-accent no-underline px-2.5 py-1 bg-[rgba(167,139,250,0.1)] rounded transition-colors duration-200 hover:bg-[rgba(167,139,250,0.2)]">
+            View on GitHub ↗
+          </a>
+        )}
+        <Link to={`/doc/${encodeURIComponent(docId)}`}
+          className="text-xs text-text-secondary no-underline px-2.5 py-1 rounded border border-white/[0.08] transition-colors duration-200 hover:border-accent hover:text-accent">
+          Open full page →
+        </Link>
+      </footer>
+    </article>
   );
 }

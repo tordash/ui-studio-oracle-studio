@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getSimilar } from '../../api/oracle';
-import { mapSimilar } from '../../lib/web/related';
+import { mapSimilar, withTimeout, RELATED_TIMEOUT_MS } from '../../lib/web/related';
 import type { RelatedContext, RelatedRow } from '../../lib/web/related';
 
 export const RELATED_LIMIT = 12;
@@ -27,11 +27,13 @@ export function Related({ docId, ctx, palette, onHop, onRows }: RelatedProps) {
   const [state, setState] = useState<State>({ status: 'loading' });
   const [expanded, setExpanded] = useState(false);
   const [shownFor, setShownFor] = useState(docId);
+  const [attempt, setAttempt] = useState(0);
   if (shownFor !== docId) { setShownFor(docId); setState({ status: 'loading' }); setExpanded(false); }
 
   useEffect(() => {
     let cancelled = false;
-    getSimilar(docId, RELATED_LIMIT)
+    // a stalled request (arra busy) ends in the error state + Try again, never endless skeletons
+    withTimeout(getSimilar(docId, RELATED_LIMIT), RELATED_TIMEOUT_MS)
       .then(res => {
         if (cancelled) return;
         const rows = mapSimilar(res.results ?? [], ctx);
@@ -40,9 +42,9 @@ export function Related({ docId, ctx, palette, onHop, onRows }: RelatedProps) {
       })
       .catch(() => { if (!cancelled) setState({ status: 'error' }); });
     return () => { cancelled = true; };
-    // ctx / onRows are stable per open file; refetch only when the file changes
+    // ctx / onRows are stable per open file; refetch only when the file changes (or on retry)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docId]);
+  }, [docId, attempt]);
 
   const rows = state.status === 'ready' ? state.rows : [];
   const visible = expanded ? rows : rows.slice(0, COLLAPSED);
@@ -58,7 +60,18 @@ export function Related({ docId, ctx, palette, onHop, onRows }: RelatedProps) {
           {[0, 1, 2].map(i => <li key={i} className="h-11 rounded-md bg-white/[0.03] motion-safe:animate-pulse" />)}
         </ul>
       )}
-      {state.status === 'error' && <p className="mt-2 text-[14px] text-text-secondary">Related unavailable — the document below still loads.</p>}
+      {state.status === 'error' && (
+        <p className="mt-1 flex flex-wrap items-center gap-x-2 text-[14px] text-text-secondary">
+          <span>Related unavailable — the document below still loads.</span>
+          <button
+            type="button"
+            onClick={() => { setState({ status: 'loading' }); setAttempt(n => n + 1); }}
+            className="min-h-11 rounded-md px-1 text-accent underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            Try again
+          </button>
+        </p>
+      )}
       {state.status === 'ready' && rows.length === 0 && <p className="mt-2 text-[14px] text-text-secondary">No related documents in the index.</p>}
       {visible.length > 0 && (
         <ul className="mt-1 flex flex-col divide-y divide-white/[0.05]">
