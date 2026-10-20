@@ -11,6 +11,7 @@ import type { GpuTier } from '../three/gpu-tier';
 import { pulsesPerEdge, pulseSpeed } from './budget';
 import { quantizeCycles } from './motes';
 import { xxhash } from './hash';
+import type { IntraResult } from './intra';
 
 export const RIBBON_SEGMENTS = 24;
 export const ARC_BOW = 0.25;
@@ -169,5 +170,108 @@ export function arcPolyline(arcs: Pick<ArcSet, 'p0' | 'p2' | 'ctrl'>, edge: numb
   const p2 = arcs.p2.subarray(edge * 3, edge * 3 + 3);
   const c = arcs.ctrl.subarray(edge * 3, edge * 3 + 3);
   for (let s = 0; s <= segments; s++) out.set(bezierPoint(p0, c, p2, s / segments), s * 3);
+  return out;
+}
+
+// ── intra-cluster segments (drill) ─────────────────────────────────────
+
+
+export interface IntraSegments {
+  count: number;
+  /** star indices (global) */
+  i: Int32Array;
+  j: Int32Array;
+  /** cosine (vector-layer extras carry 0.5: /api/similar scores are not usable) */
+  s: Float32Array;
+  /** 0 = concept link (solid), > 0 = dots per segment (vector neighbour) */
+  dots: Float32Array;
+  /** 1 = touches the armed star */
+  focus: Uint8Array;
+}
+
+export interface IntraSegmentOptions {
+  /** tier cap for the base layer (4k desktop / 1.5k mid / 800 low) */
+  cap: number;
+  /** strongest links drawn per file in the base layer */
+  perFile?: number;
+  /** armed star: ALL its links (K = 6) are added and flagged */
+  focusStar?: number;
+  /** in-cluster /api/similar neighbours of the focus star (dotted vector layer) */
+  vector?: readonly number[];
+}
+
+export const VECTOR_DOTS = 14;
+
+/**
+ * Base layer: each file's strongest `perFile` (2) links, de-duplicated, strongest
+ * first, capped. Then the armed star's full neighbour list and its vector
+ * neighbours on top (flagged), so tapping a star always reveals all of its links.
+ */
+export function buildIntraSegments(r: IntraResult, o: IntraSegmentOptions): IntraSegments {
+  const perFile = o.perFile ?? 2;
+  const key = (a: number, b: number) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+  const base = new Map<string, { i: number; j: number; s: number }>();
+  for (let li = 0; li < r.members.length; li++) {
+    const f = r.members[li];
+    const end = Math.min(r.nbrOff[li + 1], r.nbrOff[li] + perFile);
+    for (let q = r.nbrOff[li]; q < end; q++) {
+      const g = r.nbr[q];
+      const k = key(f, g);
+      if (!base.has(k)) base.set(k, { i: Math.min(f, g), j: Math.max(f, g), s: r.score[q] });
+    }
+  }
+  const sorted = [...base.values()].sort((x, y) => y.s - x.s || x.i - y.i || x.j - y.j).slice(0, Math.max(0, o.cap));
+  const rows = sorted.map(x => ({ ...x, dots: 0, focus: 0 }));
+  const index = new Map(rows.map((x, n) => [key(x.i, x.j), n] as const));
+
+  const f = o.focusStar ?? -1;
+  if (f >= 0) {
+    // the focus star's own list (members is ascending → binary search)
+    let lo = 0, hi = r.members.length - 1, li = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (r.members[mid] === f) { li = mid; break; }
+      if (r.members[mid] < f) lo = mid + 1; else hi = mid - 1;
+    }
+    if (li >= 0) {
+      for (let q = r.nbrOff[li]; q < r.nbrOff[li + 1]; q++) {
+        const g = r.nbr[q];
+        const k = key(f, g);
+        const at = index.get(k);
+        if (at != null) rows[at].focus = 1;
+        else { index.set(k, rows.length); rows.push({ i: Math.min(f, g), j: Math.max(f, g), s: r.score[q], dots: 0, focus: 1 }); }
+      }
+    }
+    for (const g of o.vector ?? []) {
+      if (g === f || g < 0) continue;
+      const k = key(f, g);
+      const at = index.get(k);
+      if (at != null) { rows[at].focus = 1; continue; } // concept link wins: solid
+      index.set(k, rows.length);
+      rows.push({ i: Math.min(f, g), j: Math.max(f, g), s: 0.5, dots: VECTOR_DOTS, focus: 1 });
+    }
+  }
+  const n = rows.length;
+  const out: IntraSegments = {
+    count: n, i: new Int32Array(n), j: new Int32Array(n), s: new Float32Array(n), dots: new Float32Array(n), focus: new Uint8Array(n),
+  };
+  rows.forEach((x, q) => { out.i[q] = x.i; out.j[q] = x.j; out.s[q] = x.s; out.dots[q] = x.dots; out.focus[q] = x.focus; });
+  return out;
+}
+
+export interface IntraPulses { count: number; i: Int32Array; j: Int32Array; speed: Float32Array; offset: Float32Array }
+
+/** One pulse on each of the strongest concept links (vector extras get none), at most `cap`. */
+export function buildIntraPulses(seg: IntraSegments, cap: number): IntraPulses {
+  const pick: number[] = [];
+  for (let q = 0; q < seg.count && pick.length < cap; q++) if (seg.dots[q] === 0) pick.push(q);
+  // segments are strongest-first except the appended focus rows; keep that order
+  const n = pick.length;
+  const out: IntraPulses = { count: n, i: new Int32Array(n), j: new Int32Array(n), speed: new Float32Array(n), offset: new Float32Array(n) };
+  pick.forEach((q, k) => {
+    out.i[k] = seg.i[q]; out.j[k] = seg.j[q];
+    out.speed[k] = quantizeCycles(0.2 + 0.35 * Math.max(0, Math.min(1, seg.s[q])));
+    out.offset[k] = xxhash(0x1e7a, seg.i[q] * 7919 + seg.j[q]);
+  });
   return out;
 }
