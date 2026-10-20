@@ -8,6 +8,8 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+# tsc -b build info (kept out of node_modules, which worktrees symlink to the main clone)
+.tsbuild/
 dist
 dist-ssr
 *.local
