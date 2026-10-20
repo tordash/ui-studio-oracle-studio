@@ -23,6 +23,9 @@ import type { PeekAction, PeekRow, PeekState, StarInfo } from '../lib/web/peek-m
 import { parseWebUrl, resolveWebState, webSearch, WebHistory } from '../lib/web/url-state';
 import type { WebUrlState } from '../lib/web/url-state';
 import { inClusterStars } from '../lib/web/related';
+import { keyboardAction, ignoreKeyEvent } from '../lib/web/keyboard';
+import { fileRows } from '../lib/web/list-model';
+import { starsOf } from '../lib/web/scene';
 import type { RelatedRow } from '../lib/web/related';
 import type { SnapPoint } from '../lib/ui/sheet-snap';
 import { GLASS, SPACE_BG } from '../lib/ui/space';
@@ -33,6 +36,7 @@ import type { ArmTarget, LabelAnchor, WebEngine, WebEngineData } from '../compon
 import { ClusterLabels } from '../components/web/ClusterLabels';
 import type { LabelLayoutFn } from '../components/web/ClusterLabels';
 import { PeekCard } from '../components/web/PeekCard';
+import { WebList } from '../components/web/WebList';
 import { Related } from '../components/web/Related';
 import { ViewSwitch } from '../components/web/ViewSwitch';
 import { Sheet } from '../components/ui/Sheet';
@@ -69,6 +73,8 @@ export function KnowledgeWeb() {
   const [intra, setIntra] = useState<{ cluster: number; r: IntraResult } | null>(null);
   const [live, setLive] = useState('');
   const [engineVersion, setEngineVersion] = useState(0);
+  const [listOpen, setListOpen] = useState(false);
+  const [listSnap, setListSnap] = useState<SnapPoint>('half');
 
   const engineRef = useRef<WebEngine | null>(null);
   const computeRef = useRef<WebCompute | null>(null);
@@ -178,6 +184,23 @@ export function KnowledgeWeb() {
 
   const intraHere = intra && intra.cluster === drilled ? intra.r : null;
 
+  // list view + keyboard share the canvas's model
+  const drilledStars = useMemo(() => (model && drilled >= 0 ? starsOf(model.scene, drilled) : []), [model, drilled]);
+  const clusterOrder = useMemo(() => {
+    if (!model) return [] as number[];
+    const s = model.stats.sizes;
+    return [...Array(s.length).keys()].sort((a, b) => s[b] - s[a] || a - b);
+  }, [model]);
+  const starOrder = useMemo(
+    () => (data && drilledStars.length ? fileRows(drilledStars, data.titles, data.dates, () => '', null, Math.ceil(drilledStars.length / 100)).rows.map(r => r.star) : []),
+    [data, drilledStars],
+  );
+  const linkCount = useMemo(() => {
+    if (!intraHere) return null;
+    const r = intraHere;
+    return (star: number) => neighboursOf(r, star).length;
+  }, [intraHere]);
+
   // ── engine callbacks ──
   const onArm = useCallback((t: ArmTarget | null) => {
     setArmed(t);
@@ -230,6 +253,36 @@ export function KnowledgeWeb() {
     if (armed?.kind === 'cluster' && armed.index === c) enterCluster(c);
     else { setArmed({ kind: 'cluster', index: c }); setPeekSnap('peek'); }
   }, [armed, enterCluster]);
+
+  // ── keyboard: ←/→ cycle, Enter enter/open, Esc back out, +/− zoom, Home reset ──
+  const openNow = openStar;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (ignoreKeyEvent({ key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, altKey: e.altKey, defaultPrevented: e.defaultPrevented, targetTag: t?.tagName, editable: t?.isContentEditable })) return;
+      if (openNow >= 0) return; // the open file owns the keyboard; its Esc closes it
+      const a = keyboardAction(e.key, { drilled, armed, clusterOrder, starOrder, listOpen });
+      if (!a) return;
+      e.preventDefault();
+      const eng = engineRef.current;
+      switch (a.kind) {
+        case 'arm':
+          setArmed(a.target);
+          if (a.target.kind === 'cluster') eng?.focusCluster(a.target.index);
+          else eng?.flyToStar(a.target.index);
+          break;
+        case 'enter': enterCluster(a.cluster); break;
+        case 'open': openFile(a.star); break;
+        case 'disarm': setArmed(null); break;
+        case 'back': back(); break;
+        case 'close-list': setListOpen(false); break;
+        case 'zoom': eng?.zoomBy(a.factor); break;
+        case 'home': eng?.goHome(); break;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openNow, drilled, armed, clusterOrder, starOrder, listOpen, enterCluster, openFile, back]);
 
   // ── related (open file) ──
   const relatedCtx = useMemo(() => (model && data ? {
@@ -287,9 +340,28 @@ export function KnowledgeWeb() {
     <FillViewport className="relative flex overflow-hidden overscroll-none" style={{ background: SPACE_BG }}>
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         {useFallback ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
-            <p className="text-[15px] text-text-primary">{webgl ? 'Graphics context lost.' : '3D is unavailable on this device.'}</p>
-            <p className="text-[14px] text-text-secondary">The same clusters and links are in the list view.</p>
+          <div className="absolute inset-0 overflow-y-auto overscroll-contain px-4 pb-10 pt-24 sm:px-8">
+            <div className="mx-auto flex max-w-[760px] flex-col gap-4">
+              <p className="text-[14px] text-text-secondary">
+                {webgl ? 'Graphics context lost' : '3D is unavailable on this device'} — the same clusters and links as a list.
+              </p>
+              <div id="web-list">
+                <WebList
+                  model={p}
+                  palette={model.core.palette}
+                  titleId="web-list-title"
+                  drilled={drilled}
+                  drilledStars={drilledStars}
+                  titles={data.titles}
+                  dates={data.dates}
+                  formatDate={formatDay}
+                  linkCount={linkCount}
+                  coverage={intraHere ? intraHere.coverage : null}
+                  onEnter={enterCluster}
+                  onOpenStar={openFile}
+                />
+              </div>
+            </div>
           </div>
         ) : (
           <>
@@ -349,8 +421,20 @@ export function KnowledgeWeb() {
               </div>
             )}
           </div>
-          <div className="pointer-events-auto flex shrink-0 items-start gap-2">
+          <div className="pointer-events-auto flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-start">
             <ViewSwitch active="web" style={GLASS} />
+            {!useFallback && (
+              <button
+                type="button"
+                onClick={() => setListOpen(v => !v)}
+                aria-expanded={listOpen}
+                aria-controls="web-list"
+                className="flex min-h-11 items-center rounded-xl border border-white/[0.09] px-3.5 text-[14px] text-text-primary transition-colors duration-150 hover:border-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                style={GLASS}
+              >
+                List
+              </button>
+            )}
           </div>
         </div>
 
@@ -391,12 +475,67 @@ export function KnowledgeWeb() {
           </section>
         )}
 
+        {/* list view: desktop side panel (phones: bottom sheet below) */}
+        {listOpen && !useFallback && wide && (
+          <section
+            id="web-list"
+            aria-labelledby="web-list-title"
+            className="absolute bottom-3 right-3 top-[76px] z-30 w-[400px] overflow-y-auto overscroll-contain rounded-2xl border border-white/[0.09] p-4 shadow-[0_16px_60px_rgba(0,0,0,0.5)] sm:right-4"
+            style={GLASS}
+          >
+            <WebList
+              model={p}
+              palette={model.core.palette}
+              titleId="web-list-title"
+              drilled={drilled}
+              drilledStars={drilledStars}
+              titles={data.titles}
+              dates={data.dates}
+              formatDate={formatDay}
+              linkCount={linkCount}
+              coverage={intraHere ? intraHere.coverage : null}
+              onEnter={c => { enterCluster(c); }}
+              onOpenStar={openFile}
+              onClose={() => setListOpen(false)}
+            />
+          </section>
+        )}
+
         {/* screen-reader summary (the canvas's aria-describedby) + live announcements */}
         <p id="web-list-summary" className="sr-only">{summary}</p>
         <p className="sr-only" aria-live="polite" role="status">{live}</p>
       </div>
 
-      {peekOpen && !wide && peekView && (
+      {listOpen && !useFallback && !wide && (
+        <Sheet
+          snap={listSnap}
+          onSnapChange={setListSnap}
+          onClose={() => setListOpen(false)}
+          snaps={['half', 'full']}
+          labelledBy="web-list-title"
+          reducedMotion={reducedMotion}
+        >
+          <div id="web-list">
+            <WebList
+              model={p}
+              palette={model.core.palette}
+              titleId="web-list-title"
+              drilled={drilled}
+              drilledStars={drilledStars}
+              titles={data.titles}
+              dates={data.dates}
+              formatDate={formatDay}
+              linkCount={linkCount}
+              coverage={intraHere ? intraHere.coverage : null}
+              onEnter={c => { setListOpen(false); enterCluster(c); }}
+              onOpenStar={i => { setListOpen(false); openFile(i); }}
+              onClose={() => setListOpen(false)}
+            />
+          </div>
+        </Sheet>
+      )}
+
+      {peekOpen && !wide && !listOpen && peekView && (
         <Sheet
           snap={peekSnap}
           onSnapChange={setPeekSnap}

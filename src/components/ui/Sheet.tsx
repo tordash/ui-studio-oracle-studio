@@ -72,11 +72,12 @@ export function Sheet({ snap, onSnapChange, onClose, snaps = SNAP_ORDER, labelle
       if (e.key !== 'Escape') return;
       const el = ref.current;
       if (!el || (!full && !el.contains(document.activeElement))) return;
-      e.stopPropagation();
+      // capture phase + preventDefault: page-level shortcuts (bubble phase) skip a handled Esc
+      e.preventDefault();
       close();
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [full, close]);
 
   const onKeyDownTrap = (e: React.KeyboardEvent) => {

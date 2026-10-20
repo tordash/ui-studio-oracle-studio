@@ -468,6 +468,18 @@ export class WebEngine {
     this.requestRender();
   }
 
+  /** Ease the camera toward a cluster (keyboard focus follows; jump under reduced motion). */
+  focusCluster(c: number) {
+    if (c < 0 || c >= this.sc.C) return;
+    const sc = this.sc;
+    this.rig.goalTarget = [sc.centres[c * 3], sc.centres[c * 3 + 1], sc.centres[c * 3 + 2]];
+    this.rig.dist.goal = clampDist(this.rig, Math.max(fitSphereDistance(sc.radii[c] * 2.2, WEB_FOV, this.width / this.height), 8));
+    this.rig.speed = 2.6;
+    this.finishIntro();
+    if (this.reduced) snapRig(this.rig);
+    this.requestRender();
+  }
+
   /** Ease the camera to a star (jump under reduced motion). */
   flyToStar(i: number) {
     if (i < 0 || i >= this.sc.n) return;

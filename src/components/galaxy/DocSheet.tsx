@@ -151,11 +151,12 @@ function SidePanel({ data, idx, reducedMotion, onClose, related }: Omit<DocSheet
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      e.preventDefault(); // capture phase: page shortcuts see a handled Esc
       if (reducedMotion) onClose();
       else setClosing(true);
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose, reducedMotion]);
 
   return (
