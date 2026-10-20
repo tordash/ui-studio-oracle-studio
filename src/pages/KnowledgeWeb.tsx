@@ -37,6 +37,8 @@ import { ClusterLabels } from '../components/web/ClusterLabels';
 import type { LabelLayoutFn } from '../components/web/ClusterLabels';
 import { PeekCard } from '../components/web/PeekCard';
 import { WebList } from '../components/web/WebList';
+import { WebFallback2D, canvas2dAvailable } from '../components/web/WebFallback2D';
+import { renderMode } from '../lib/web/project2d';
 import { Related } from '../components/web/Related';
 import { ViewSwitch } from '../components/web/ViewSwitch';
 import { Sheet } from '../components/ui/Sheet';
@@ -61,6 +63,7 @@ export function KnowledgeWeb() {
   const reducedMotion = useSyncExternalStore(subscribeReducedMotion, getReducedMotion, () => false);
   const wide = useSyncExternalStore(subscribeWide, getWide, () => true);
   const [webgl] = useState(() => webglAvailable());
+  const [canvas2d] = useState(() => canvas2dAvailable());
   const [tier] = useState<GpuTier>(() => (webgl ? probeGpuTier() : 'low'));
   const [contextLost, setContextLost] = useState(false);
 
@@ -328,7 +331,8 @@ export function KnowledgeWeb() {
     );
   }
 
-  const useFallback = !webgl || contextLost;
+  const mode = renderMode(webgl, contextLost, canvas2d);
+  const useFallback = mode !== '3d';
   const p = model.peek;
   const summary = webSummary(p);
   const drilledLabel = drilled >= 0 ? model.labels[drilled] : null;
@@ -343,8 +347,23 @@ export function KnowledgeWeb() {
           <div className="absolute inset-0 overflow-y-auto overscroll-contain px-4 pb-10 pt-24 sm:px-8">
             <div className="mx-auto flex max-w-[760px] flex-col gap-4">
               <p className="text-[14px] text-text-secondary">
-                {webgl ? 'Graphics context lost' : '3D is unavailable on this device'} — the same clusters and links as a list.
+                {webgl ? 'Graphics context lost' : '3D is unavailable on this device'} — the same clusters and links{mode === '2d' ? ' in 2D, and' : ''} as a list.
               </p>
+              {mode === '2d' && drilled < 0 && (
+                <WebFallback2D
+                  centres={model.core.centres}
+                  radii={model.core.radii}
+                  palette={model.core.palette}
+                  labels={model.labels}
+                  sizes={p.sizes}
+                  edges={p.edges}
+                  unsorted={p.unsorted}
+                  reducedMotion={reducedMotion}
+                  maxLabels={wide ? 24 : 12}
+                  onEnter={enterCluster}
+                  summary={summary}
+                />
+              )}
               <div id="web-list">
                 <WebList
                   model={p}

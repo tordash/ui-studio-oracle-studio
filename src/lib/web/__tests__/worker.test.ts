@@ -131,6 +131,22 @@ describe('createWebCompute', () => {
     await expect(wc.intra(42)).rejects.toThrow('unknown cluster 42');
   });
 
+  it('main-thread fallback yields between requests (one per task, never all at once)', async () => {
+    const queue: (() => void)[] = [];
+    const wc = createWebCompute(docs, { makeWorker: () => null, schedule: fn => { queue.push(fn); } });
+    const a = wc.core();
+    const b = wc.intra(0);
+    expect(queue).toHaveLength(2);
+    queue.shift()!();
+    await a;
+    let bDone = false;
+    void b.then(() => { bDone = true; });
+    await Promise.resolve();
+    expect(bDone).toBe(false); // second request still waiting for its own task
+    queue.shift()!();
+    expect((await b).cluster).toBe(0);
+  });
+
   it('dispose resolves pending requests as errors', async () => {
     const wc = createWebCompute(docs, { makeWorker: () => new FakeWorker() });
     const p = wc.core();
