@@ -16,6 +16,11 @@ interface SheetProps {
   /** content rendered in the drag zone next to the handle (title row) */
   header?: ReactNode;
   className?: string;
+  /**
+   * 'region': below full the sheet is a non-modal labelled region (a persistent card),
+   * a dialog only when full. Default 'dialog' at every snap (a sheet the user opened).
+   */
+  nonModalRole?: 'dialog' | 'region';
 }
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -36,7 +41,7 @@ function useViewportHeight(): number {
  * handle + header as the only drag zone (content scrolls with overscroll-contain),
  * home-indicator safe area, Esc to close, aria-modal and focus moved in while full.
  */
-export function Sheet({ snap, onSnapChange, onClose, snaps = SNAP_ORDER, labelledBy, reducedMotion, children, header, className }: SheetProps) {
+export function Sheet({ snap, onSnapChange, onClose, snaps = SNAP_ORDER, labelledBy, reducedMotion, children, header, className, nonModalRole = 'dialog' }: SheetProps) {
   const vh = useViewportHeight();
   const heights = snapHeights(vh, 0);
   const ref = useRef<HTMLElement>(null);
@@ -124,8 +129,8 @@ export function Sheet({ snap, onSnapChange, onClose, snaps = SNAP_ORDER, labelle
   return (
     <section
       ref={ref}
-      role="dialog"
-      aria-modal={full}
+      role={full ? 'dialog' : nonModalRole}
+      aria-modal={full || nonModalRole === 'dialog' ? full : undefined}
       aria-labelledby={labelledBy}
       tabIndex={-1}
       onKeyDown={onKeyDownTrap}

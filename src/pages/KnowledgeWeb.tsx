@@ -41,6 +41,7 @@ import { WebFallback2D, canvas2dAvailable } from '../components/web/WebFallback2
 import { renderMode } from '../lib/web/project2d';
 import { frameInsets } from '../lib/web/fit';
 import { LABEL_TOP_N_PHONE, LABEL_TOP_N_WIDE } from '../lib/web/labels';
+import { webSheets } from '../lib/web/sheets';
 import { Related } from '../components/web/Related';
 import { ViewSwitch } from '../components/web/ViewSwitch';
 import { Sheet } from '../components/ui/Sheet';
@@ -358,7 +359,8 @@ export function KnowledgeWeb() {
   const summary = webSummary(p);
   const drilledLabel = drilled >= 0 ? model.labels[drilled] : null;
   const openIdx = openStar >= 0 && openStar < data.count ? openStar : -1;
-  const peekOpen = !!peekView && openIdx < 0;
+  // derived from the URL on every location change (push or popstate): back closes the file
+  const sheets = webSheets({ openStar: openIdx, hasPeek: !!peekView, wide, listOpen, peekSnap });
   const moteChip = p.moteSource === 'estimate' ? 'chunk particles estimated' : p.moteSource === 'none' ? 'no chunk particles' : null;
 
   return (
@@ -508,7 +510,7 @@ export function KnowledgeWeb() {
         )}
 
         {/* peek card: desktop panel bottom-left; phones use the bottom sheet below */}
-        {peekOpen && wide && peekView && (
+        {sheets.peekPanel && peekView && (
           <section
             aria-labelledby="web-peek-title"
             className="absolute bottom-4 left-4 z-20 flex max-h-[min(62%,560px)] w-[380px] flex-col overflow-y-auto overscroll-contain rounded-2xl border border-white/[0.09] p-4 shadow-[0_16px_60px_rgba(0,0,0,0.5)]"
@@ -578,7 +580,7 @@ export function KnowledgeWeb() {
         </Sheet>
       )}
 
-      {peekOpen && !wide && !listOpen && peekView && (
+      {sheets.peekSheet && peekView && (
         <Sheet
           snap={peekSnap}
           onSnapChange={setPeekSnap}
@@ -586,12 +588,13 @@ export function KnowledgeWeb() {
           snaps={['peek', 'half', 'full']}
           labelledBy="web-peek-title"
           reducedMotion={reducedMotion}
+          nonModalRole="region"
         >
           <PeekCard view={peekView} palette={model.core.palette} titleId="web-peek-title" onAction={onPeekAction} onRow={onPeekRow} />
         </Sheet>
       )}
 
-      {openIdx >= 0 && relatedCtx && (
+      {sheets.doc && relatedCtx && (
         <DocSheet
           data={data}
           idx={openIdx}

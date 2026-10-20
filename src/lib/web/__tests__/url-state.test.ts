@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { parseWebUrl, webSearch, webUrl, resolveWebState, parentState, WebHistory, UNSORTED_PARAM } from '../url-state';
 import { UNSORTED_KEY } from '../keys';
+import { webSheets } from '../sheets';
 
 describe('parse / build', () => {
   it('round-trips, encoding keys and ids', () => {
@@ -84,5 +85,62 @@ describe('WebHistory (stub browser history)', () => {
     w.push(h.current, '?c=own%2Fa&f=x'); h.push('?c=own%2Fa&f=x'); w.onLocation(h.current);
     h.back(); w.onLocation(h.current); // swipe-back
     expect(w.back(h.current)).toEqual({ kind: 'pop' });
+  });
+});
+
+describe('file sheet follows the URL on every location change (T21 back test)', () => {
+  const C = 'own/marketing-agency-team';
+  const F = 'learning_../Projects/marketing-agency-team/brain/Episodic/2026-03-05-content-series-research-journal_0';
+  const keys = ['∅', C, 'own/tor-oracle'];
+  const ids: Record<string, number> = { [F]: 7 };
+  const clusterOfStar = (i: number) => (i === 7 ? 1 : 0);
+  /** what KnowledgeWeb derives from `location.search` on each render */
+  const derive = (search: string, ui = { wide: false, listOpen: false, peekSnap: 'peek' as const }) => {
+    const st = resolveWebState(parseWebUrl(search), keys, id => ids[id] ?? -1, clusterOfStar);
+    // drilled → the cluster's card exists (hasPeek); a file open hides it
+    return { st, sheets: webSheets({ openStar: st.star, hasPeek: st.cluster >= 0, ...ui }) };
+  };
+
+  it('raw pushState(&f=) + popstate opens the file; browser back closes it, the card returns as a non-dialog region', () => {
+    const h = new StubHistory(webSearch({ c: C, f: null }));
+    const w = new WebHistory();
+    w.onLocation(h.current);
+    expect(derive(h.current).sheets).toEqual({ doc: false, peekPanel: false, peekSheet: true, peekRole: 'region' });
+
+    // the T21 harness: history.pushState(…&f=…) bypassing go(), then a popstate
+    h.push(webSearch({ c: C, f: F }));
+    w.onLocation(h.current);
+    const open = derive(h.current);
+    expect(open.st).toEqual({ cluster: 1, star: 7 });
+    expect(open.sheets.doc).toBe(true);
+    expect(open.sheets.peekSheet).toBe(false);
+
+    // page.goBack(): popstate to ?c=
+    h.back();
+    w.onLocation(h.current);
+    const back = derive(h.current);
+    expect(parseWebUrl(h.current)).toEqual({ c: C, f: null });
+    expect(back.st.star).toBe(-1);
+    expect(back.sheets.doc).toBe(false);
+    expect(back.sheets.peekSheet).toBe(true);
+    expect(back.sheets.peekRole).toBe('region'); // no role="dialog" left on screen
+  });
+
+  it('the in-app Back on an entry the page did not push replaces with the parent (never navigates out), same result', () => {
+    const h = new StubHistory(webSearch({ c: C, f: null }));
+    const w = new WebHistory();
+    w.onLocation(h.current);
+    h.push(webSearch({ c: C, f: F })); w.onLocation(h.current); // raw push, not go()
+    const a = w.back(h.current);
+    expect(a).toEqual({ kind: 'replace', search: webSearch({ c: C, f: null }) }); // unknown entry → replace with the parent
+    h.replace(a.kind === 'replace' ? a.search : h.current); w.onLocation(h.current);
+    expect(derive(h.current).sheets.doc).toBe(false);
+  });
+
+  it('desktop: the card is the side panel; a full phone card is the only modal case', () => {
+    expect(webSheets({ openStar: -1, hasPeek: true, wide: true, listOpen: false, peekSnap: 'peek' })).toMatchObject({ peekPanel: true, peekSheet: false });
+    expect(webSheets({ openStar: -1, hasPeek: true, wide: false, listOpen: false, peekSnap: 'full' }).peekRole).toBe('dialog');
+    expect(webSheets({ openStar: -1, hasPeek: true, wide: false, listOpen: true, peekSnap: 'peek' }).peekSheet).toBe(false);
+    expect(webSheets({ openStar: 3, hasPeek: true, wide: true, listOpen: false, peekSnap: 'peek' })).toMatchObject({ doc: true, peekPanel: false });
   });
 });
