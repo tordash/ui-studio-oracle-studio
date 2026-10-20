@@ -338,6 +338,7 @@ export function Header() {
           <button
             ref={toolsBtn}
             type="button"
+            aria-label="Tools"
             aria-expanded={toolsOpen}
             aria-controls="header-tools-menu"
             onClick={() => toolsDispatch({ type: 'toggle' })}
