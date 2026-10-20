@@ -108,7 +108,9 @@ export function KnowledgeWeb() {
     const wc = createWebCompute(docs, { makeWorker: makeWebWorker, encoded: enc });
     computeRef.current = wc;
     let cancelled = false;
-    memoCore(pca?.computed_at, docs.length, () => wc.core(), persist)
+    // the memoised promise may outlive this mount (StrictMode remount, quick navigate-back):
+    // compute on whichever client is live when the persisted-cache miss resolves
+    memoCore(pca?.computed_at, docs.length, () => (computeRef.current ?? wc).core(), persist)
       .then(c => { if (!cancelled) setCore(c); })
       .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => {
@@ -166,6 +168,9 @@ export function KnowledgeWeb() {
   const onReady = useCallback(() => setEngineVersion(v => v + 1), []);
   useEffect(() => { engineRef.current?.setDrill(drilled); }, [drilled, engineVersion]);
   useEffect(() => { engineRef.current?.setSelectedStar(openStar); }, [openStar, engineVersion]);
+  // opening a file (incl. a Related hop) flies the camera to its star; a cross-cluster hop's
+  // drill framing (out-then-in) takes over when the new cluster begins
+  useEffect(() => { if (openStar >= 0) engineRef.current?.flyToStar(openStar); }, [openStar, engineVersion]);
   useEffect(() => { engineRef.current?.setArmed(armed); }, [armed, engineVersion]);
   useEffect(() => { setArmed(null); setPeekSnap('peek'); }, [drilled]);
 
