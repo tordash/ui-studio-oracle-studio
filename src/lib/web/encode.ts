@@ -23,9 +23,11 @@ export interface EncodedWeb {
   conceptIds: Int32Array;
   /** raw PCA position per file (x, y, z in [-1, 1]); z = 0 when the API has none */
   pos: Float32Array;
+  /** canonical rank of each file by doc id — the tie-break that survives input order */
+  rank: Int32Array;
 }
 
-type EncodableDoc = Pick<MapDocument, 'project' | 'concepts' | 'x' | 'y'> & { z?: number };
+type EncodableDoc = Pick<MapDocument, 'id' | 'project' | 'concepts' | 'x' | 'y'> & { z?: number };
 
 export function encodeForWorker(
   docs: readonly EncodableDoc[],
@@ -64,12 +66,16 @@ export function encodeForWorker(
     pos[i * 3 + 1] = Number.isFinite(d.y) ? d.y : 0;
     pos[i * 3 + 2] = typeof d.z === 'number' && Number.isFinite(d.z) ? d.z : 0;
   }
-  return { n, clusterKeys, clusterOf, conceptNames, conceptOff, conceptIds: Int32Array.from(ids), pos };
+  const byId = Array.from({ length: n }, (_, i) => i)
+    .sort((a, b) => (docs[a].id < docs[b].id ? -1 : docs[a].id > docs[b].id ? 1 : a - b));
+  const rank = new Int32Array(n);
+  byId.forEach((f, r) => { rank[f] = r; });
+  return { n, clusterKeys, clusterOf, conceptNames, conceptOff, conceptIds: Int32Array.from(ids), pos, rank };
 }
 
 /** The ArrayBuffers to pass as `transfer` (they detach on the sender). */
 export function transferables(e: EncodedWeb): ArrayBuffer[] {
-  return [e.clusterOf.buffer, e.conceptOff.buffer, e.conceptIds.buffer, e.pos.buffer] as ArrayBuffer[];
+  return [e.clusterOf.buffer, e.conceptOff.buffer, e.conceptIds.buffer, e.pos.buffer, e.rank.buffer] as ArrayBuffer[];
 }
 
 /** Files of each cluster, ascending file index. */

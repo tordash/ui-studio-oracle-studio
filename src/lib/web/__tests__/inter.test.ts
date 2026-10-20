@@ -21,7 +21,8 @@ describe('encodeForWorker', () => {
     expect([...e.conceptIds]).toEqual([0, 1, 0, 2]);
     expect([...documentFrequency(e)]).toEqual([2, 1, 1]);
     expect(membersByCluster(e).map(m => [...m])).toEqual([[0, 2], [1]]);
-    expect(transferables(e)).toHaveLength(4);
+    expect(transferables(e)).toHaveLength(5);
+    expect([...e.rank]).toEqual([0, 1, 2]);
   });
   it('treats missing z as 0 (2D map fallback)', () => {
     const d = doc('a', null, []);

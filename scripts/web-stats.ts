@@ -6,6 +6,7 @@ import { readFileSync } from 'fs';
 import { encodeForWorker } from '../src/lib/web/encode';
 import { interEdges, isDiffuse } from '../src/lib/web/inter';
 import { clusterLabels } from '../src/lib/web/keys';
+import { intraEdges } from '../src/lib/web/intra';
 
 const path = process.argv[2];
 if (!path) { console.error('usage: bun scripts/web-stats.ts <map3d.json>'); process.exit(1); }
@@ -25,4 +26,14 @@ console.log(`top-5 share of weight: median ${ex[ex.length >> 1].toFixed(2)} · p
 console.log(`time: encode ${(t1 - t0).toFixed(1)} ms · inter ${(t2 - t1).toFixed(1)} ms`);
 for (const x of r.edges.slice(0, 10)) {
   console.log(`  ${label(x.a)} ↔ ${label(x.b)}  ${x.w.toFixed(3)}  ${x.evidence.slice(0, 3).map(v => `${v.concept} ${Math.round(v.share * 100)}%`).join(', ')}`);
+}
+
+// intra coverage for the design's reference clusters (§3.3)
+for (const key of ['∅', 'own/marketing-agency-team', 'own/tor-oracle', 'own/somtor-oracle']) {
+  const c = e.clusterKeys.indexOf(key);
+  if (c < 0) continue;
+  const s = performance.now();
+  const r = intraEdges(e, c);
+  const ms = performance.now() - s;
+  console.log(`intra ${label(c)}: ${r.members.length} files · posting ops ${r.postingOps.toLocaleString()} · coverage ${(r.coverage * 100).toFixed(1)}% · ${r.edgeI.length.toLocaleString()} edges · ${ms.toFixed(0)} ms`);
 }
