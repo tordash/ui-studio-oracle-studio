@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { xxhash, hashOnSphere, hashInSphere, fnv1a } from '../hash';
-import { moteCounts, buildMotes, moteIndices, overviewDrawCount, drillDrawRange, moteLabel, REAL_COUNT_SHARE } from '../motes';
+import { moteCounts, buildMotes, moteIndices, overviewDrawCount, drillDrawRange, moteLabel, REAL_COUNT_SHARE, quantizeRate, quantizeCycles, TIME_PERIOD } from '../motes';
 import { BUDGETS, Governor, GOVERNOR_DEFAULTS, pulsesPerEdge, pulseSpeed, effectiveDpr } from '../budget';
 import { classifyTier } from '../../three/gpu-tier';
 import { hashTilt } from '../../planets/orbits';
@@ -86,7 +86,9 @@ describe('buildMotes', () => {
   const idsArr = Array.from({ length: n }, (_, i) => `doc-${i}`);
   const rank = Array.from({ length: n }, (_, i) => i);
   const counts = Array.from({ length: n }, (_, i) => (i % 4) + 3);
-  const stars = { clusterOf, centres, offsets, ids: idsArr, createdAt: idsArr.map(() => null), rank };
+  const phases = Array.from({ length: n }, (_, i) => (i * 0.618) % 1);
+  const radii = [1, 2, 3];
+  const stars = { clusterOf, phases, radii, centres, offsets, ids: idsArr, createdAt: idsArr.map(() => null), rank };
   const m = buildMotes(counts, stars, 3, Date.UTC(2026, 9, 21));
 
   it('one mote per chunk, attributes sized per mote', () => {
@@ -94,24 +96,29 @@ describe('buildMotes', () => {
     expect(m.count).toBe(total);
     expect(m.centre.length).toBe(total * 3);
     expect(m.offset.length).toBe(total * 3);
-    expect(m.axis.length).toBe(total * 2);
+    expect(m.star.length).toBe(total * 4);
     expect(m.orbit.length).toBe(total * 4);
     const per = new Array(n).fill(0);
     for (const s of m.starOf) per[s]++;
     expect(per).toEqual(counts);
   });
 
-  it('each mote carries its star’s centre/offset; orbit radius 1.6–3.5; phase in [0, 1)', () => {
+  it('each mote carries its star’s centre/offset/phase/R; orbit radius 1.6–3.5; phase in [0, 1)', () => {
     for (let q = 0; q < m.count; q++) {
       const s = m.starOf[q], c = clusterOf[s];
-      expect(m.orbit[q * 4 + 3]).toBe(c);
+      expect(m.star[q * 4 + 2]).toBe(c);
+      expect(m.star[q * 4]).toBeCloseTo(phases[s], 6);
+      expect(m.star[q * 4 + 1]).toBe(radii[c]);
       expect([...m.centre.subarray(q * 3, q * 3 + 3)]).toEqual(centres.slice(c * 3, c * 3 + 3));
       expect(m.offset[q * 3]).toBeCloseTo(offsets[s * 3], 6);
-      expect(m.orbit[q * 4]).toBeGreaterThanOrEqual(1.6);
-      expect(m.orbit[q * 4]).toBeLessThanOrEqual(3.5);
-      expect(m.orbit[q * 4 + 1]).toBeGreaterThanOrEqual(0);
-      expect(m.orbit[q * 4 + 1]).toBeLessThan(1);
-      expect(m.orbit[q * 4 + 2]).toBeGreaterThan(0);
+      expect(m.star[q * 4 + 3]).toBeGreaterThanOrEqual(1.6);
+      expect(m.star[q * 4 + 3]).toBeLessThanOrEqual(3.5);
+      expect(m.orbit[q * 4 + 2]).toBeGreaterThanOrEqual(0);
+      expect(m.orbit[q * 4 + 2]).toBeLessThan(1);
+      // angular speed is a whole number of turns per clock period (seamless wrap)
+      const turns = (m.orbit[q * 4 + 3] * TIME_PERIOD) / (2 * Math.PI);
+      expect(Math.abs(turns - Math.round(turns))).toBeLessThan(1e-3);
+      expect(turns).toBeGreaterThanOrEqual(1);
     }
   });
 
@@ -119,7 +126,7 @@ describe('buildMotes', () => {
     let covered = 0;
     for (let c = 0; c < 3; c++) {
       const start = m.slices[c * 2], len = m.slices[c * 2 + 1];
-      for (let q = start; q < start + len; q++) expect(m.orbit[q * 4 + 3]).toBe(c);
+      for (let q = start; q < start + len; q++) expect(m.star[q * 4 + 2]).toBe(c);
       covered += len;
     }
     expect(covered).toBe(m.count);
@@ -129,7 +136,7 @@ describe('buildMotes', () => {
     const m2 = buildMotes(counts, stars, 3, Date.UTC(2026, 9, 21));
     expect([...m2.starOf]).toEqual([...m.starOf]);
     expect([...m2.overviewIndex]).toEqual([...m.overviewIndex]);
-    expect([...m2.axis]).toEqual([...m.axis]);
+    expect([...m2.orbit]).toEqual([...m.orbit]);
   });
 
   it('overview index is a permutation; draw counts respect tier caps', () => {
@@ -145,9 +152,20 @@ describe('buildMotes', () => {
 
   it('newer files’ motes orbit faster (recency channel)', () => {
     const now = Date.UTC(2026, 9, 21);
-    const fresh = buildMotes([4], { ...stars, clusterOf: [0], offsets: [0, 0, 0], ids: ['x'], rank: [0], createdAt: [new Date(now - 86400000).toISOString()] }, 1, now);
-    const old = buildMotes([4], { ...stars, clusterOf: [0], offsets: [0, 0, 0], ids: ['x'], rank: [0], createdAt: ['2025-01-01T00:00:00Z'] }, 1, now);
-    for (let q = 0; q < 4; q++) expect(fresh.orbit[q * 4 + 2]).toBeCloseTo(old.orbit[q * 4 + 2] * 3, 5);
+    const one = { ...stars, clusterOf: [0], phases: [0], offsets: [0, 0, 0], ids: ['x'], rank: [0] };
+    const fresh = buildMotes([4], { ...one, createdAt: [new Date(now - 86400000).toISOString()] }, 1, now);
+    const old = buildMotes([4], { ...one, createdAt: ['2025-01-01T00:00:00Z'] }, 1, now);
+    for (let q = 0; q < 4; q++) expect(fresh.orbit[q * 4 + 3] / old.orbit[q * 4 + 3]).toBeGreaterThan(2.5);
+  });
+});
+
+describe('clock-wrap quantisation', () => {
+  it('rates become whole turns / cycles per period', () => {
+    expect(TIME_PERIOD).toBe(600);
+    expect(quantizeRate(0.31) * 600 / (2 * Math.PI)).toBeCloseTo(30, 9);
+    expect(quantizeRate(0)).toBeCloseTo((2 * Math.PI) / 600, 12);
+    expect(quantizeCycles(0.15) * 600).toBeCloseTo(90, 9);
+    expect(quantizeCycles(0.4012) * 600).toBeCloseTo(241, 9);
   });
 });
 

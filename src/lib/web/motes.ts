@@ -72,6 +72,10 @@ export function moteCounts(docs: readonly CountDoc[], nVectors: number | null | 
 export interface MoteStars {
   /** star → cluster */
   clusterOf: ArrayLike<number>;
+  /** star drift phase 0..1 (same value the star shader gets) */
+  phases: ArrayLike<number>;
+  /** cluster radius R per cluster */
+  radii: ArrayLike<number>;
   /** cluster centres (C × 3) */
   centres: ArrayLike<number>;
   /** star overview offsets (n × 3) */
@@ -88,9 +92,9 @@ export interface MoteBuffers {
   centre: Float32Array;
   /** star overview offset, 3 per mote */
   offset: Float32Array;
-  /** orbit normal as (θ, φ) spherical angles, 2 per mote */
-  axis: Float32Array;
-  /** (orbit radius ×star size, phase 0..1, angular speed rad/s, cluster id), 4 per mote */
+  /** (star drift phase 0..1, cluster radius R, cluster id, orbit radius × star size), 4 per mote */
+  star: Float32Array;
+  /** (orbit normal θ, orbit normal φ, phase 0..1, angular speed rad/s), 4 per mote */
   orbit: Float32Array;
   /** mote → star */
   starOf: Int32Array;
@@ -106,6 +110,19 @@ const SEED_PHASE = 0x9a5e;
 const SEED_SPEED = 0x5bee;
 /** orbits.ts speeds are 0.001–0.003 (planets per frame); × this → 0.12–0.36 rad/s */
 export const MOTE_SPEED_K = 120;
+/** shader clock wraps every TIME_PERIOD s; every rate is quantised so the wrap is seamless */
+export const TIME_PERIOD = 600;
+
+/** Round an angular rate (rad/s) to a whole number of turns per TIME_PERIOD (min 1). */
+export function quantizeRate(radPerSec: number, period = TIME_PERIOD): number {
+  const turns = Math.max(1, Math.round((radPerSec * period) / (2 * Math.PI)));
+  return (turns * 2 * Math.PI) / period;
+}
+
+/** Round a cycle rate (cycles/s) to a whole number of cycles per TIME_PERIOD (min 1). */
+export function quantizeCycles(perSec: number, period = TIME_PERIOD): number {
+  return Math.max(1, Math.round(perSec * period)) / period;
+}
 
 export function buildMotes(counts: ArrayLike<number>, stars: MoteStars, clusterCount: number, now = Date.now()): MoteBuffers {
   const n = counts.length;
@@ -118,8 +135,9 @@ export function buildMotes(counts: ArrayLike<number>, stars: MoteStars, clusterC
   const slices = new Int32Array(clusterCount * 2);
   const centre = new Float32Array(total * 3);
   const offset = new Float32Array(total * 3);
-  const axis = new Float32Array(total * 2);
+  const star = new Float32Array(total * 4);
   const orbit = new Float32Array(total * 4);
+  const clusterOfMote = new Int32Array(total);
   const starOf = new Int32Array(total);
 
   // pass 1: write motes cluster-contiguous
@@ -140,13 +158,17 @@ export function buildMotes(counts: ArrayLike<number>, stars: MoteStars, clusterC
       ax /= len; ay /= len; az /= len;
       centre[m * 3] = stars.centres[c * 3]; centre[m * 3 + 1] = stars.centres[c * 3 + 1]; centre[m * 3 + 2] = stars.centres[c * 3 + 2];
       offset[m * 3] = stars.offsets[s * 3]; offset[m * 3 + 1] = stars.offsets[s * 3 + 1]; offset[m * 3 + 2] = stars.offsets[s * 3 + 2];
-      axis[m * 2] = Math.acos(Math.max(-1, Math.min(1, az)));
-      axis[m * 2 + 1] = Math.atan2(ay, ax);
       const r = xxhash(SEED_PHASE + 1, (h + j) >>> 0);
-      orbit[m * 4] = 1.6 + 1.9 * r;                                            // 1.6–3.5 × star size
-      orbit[m * 4 + 1] = xxhash(SEED_PHASE, (h + j) >>> 0);                    // phase
-      orbit[m * 4 + 2] = speed * (0.8 + 0.4 * xxhash(SEED_SPEED, (h + j) >>> 0)) * (1.9 - 0.9 * (r)); // inner motes faster
-      orbit[m * 4 + 3] = c;
+      star[m * 4] = stars.phases[s];
+      star[m * 4 + 1] = stars.radii[c];
+      star[m * 4 + 2] = c;
+      star[m * 4 + 3] = 1.6 + 1.9 * r;                                         // 1.6–3.5 × star size
+      orbit[m * 4] = Math.acos(Math.max(-1, Math.min(1, az)));                 // normal θ
+      orbit[m * 4 + 1] = Math.atan2(ay, ax);                                   // normal φ
+      orbit[m * 4 + 2] = xxhash(SEED_PHASE, (h + j) >>> 0);                    // phase
+      // newer files spin faster; inner motes faster than outer; quantised for the clock wrap
+      orbit[m * 4 + 3] = quantizeRate(speed * (0.8 + 0.4 * xxhash(SEED_SPEED, (h + j) >>> 0)) * (1.9 - 0.9 * r));
+      clusterOfMote[m] = c;
       starOf[m] = s;
     }
   }
@@ -155,7 +177,7 @@ export function buildMotes(counts: ArrayLike<number>, stars: MoteStars, clusterC
   {
     let start = 0, cur = -1;
     for (let q = 0; q < total; q++) {
-      const c = orbit[q * 4 + 3];
+      const c = clusterOfMote[q];
       if (c !== cur) {
         if (cur >= 0) slices[cur * 2 + 1] = q - start;
         cur = c; start = q; slices[c * 2] = q;
@@ -179,7 +201,7 @@ export function buildMotes(counts: ArrayLike<number>, stars: MoteStars, clusterC
     count: total,
     centre: permute(centre, perm, 3),
     offset: permute(offset, perm, 3),
-    axis: permute(axis, perm, 2),
+    star: permute(star, perm, 4),
     orbit: permute(orbit, perm, 4),
     starOf: permuteInt(starOf, perm),
     slices,
