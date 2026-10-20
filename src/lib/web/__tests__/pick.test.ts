@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { pickCore, pickArc, pointSegDist, projectedRadius, CORE_MIN_PX, ARC_PICK_PX } from '../pick';
-import { buildIntraSegments, buildIntraPulses, VECTOR_DOTS, intraRestCount, intraLinkAlpha, segmentLengths, INTRA_ALPHA_MAX } from '../arcs';
+import { buildIntraSegments, buildIntraPulses, VECTOR_DOTS, intraRestCount, intraLinkAlpha, segmentLengths, INTRA_ALPHA_MAX, INTRA_LEN_FLOOR } from '../arcs';
 import { encodeForWorker } from '../encode';
 import { intraEdges, neighboursOf } from '../intra';
 import { BUDGETS } from '../budget';
@@ -142,8 +142,10 @@ describe('intra rest layer (T21: a constellation, not a hairball)', () => {
       expect(a[q]).toBeLessThanOrEqual(INTRA_ALPHA_MAX + 1e-6);
       if (q) expect(a[q - 1]).toBeGreaterThanOrEqual(a[q] - 1e-6); // strongest first
     }
-    const longer = Float32Array.from(len); longer[0] = 100; // 10× the median
-    expect(intraLinkAlpha(s, longer)[0]).toBeCloseTo(a[0] * 0.3, 5);
+    const longer = Float32Array.from(len); longer[0] = 100; // 10× the median → the floor
+    expect(intraLinkAlpha(s, longer)[0]).toBeCloseTo(a[0] * INTRA_LEN_FLOOR, 5);
+    longer[0] = 20;                                          // 2× → (½)^1.5
+    expect(intraLinkAlpha(s, longer)[0]).toBeCloseTo(a[0] * 0.5 ** 1.5, 5);
     // 4× the links → each one ~½ as bright (√ density), down to the floor
     const few = { count: 30, base: 30, s: Float32Array.from({ length: 30 }, () => 0.8) };
     const many = { count: 480, base: 480, s: Float32Array.from({ length: 480 }, () => 0.8) };

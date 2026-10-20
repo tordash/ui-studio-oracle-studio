@@ -289,12 +289,15 @@ export function segmentLengths(seg: Pick<IntraSegments, 'count' | 'i' | 'j'>, st
 export const INTRA_ALPHA_MAX = 0.6;
 /** base-link count at which each link keeps full alpha; more links → each one fainter (√) */
 export const INTRA_ALPHA_REF = 120;
+/** faintest a long intra link gets (relative to an equal-weight median-length one) */
+export const INTRA_LEN_FLOOR = 0.12;
 
 /**
  * Rest alpha per segment (the shader's aLink.x):
  *   weight  — strength over the drawn base set, weakest 0.35 → strongest 1;
  *   density — √(INTRA_ALPHA_REF / base), clamped to [0.3, 1];
- *   length  — median base length / length, clamped to [0.3, 1].
+ *   length  — (median base length / length)^1.5, clamped to [INTRA_LEN_FLOOR, 1]: a fan of long
+ *             links converging on one far star recedes instead of drawing a bright wedge.
  */
 export function intraLinkAlpha(seg: Pick<IntraSegments, 'count' | 'base' | 's'>, lengths: ArrayLike<number>): Float32Array {
   const out = new Float32Array(seg.count);
@@ -309,7 +312,7 @@ export function intraLinkAlpha(seg: Pick<IntraSegments, 'count' | 'base' | 's'>,
   for (let q = 0; q < seg.count; q++) {
     const w = sMax > sMin ? Math.min(1, Math.max(0, (seg.s[q] - sMin) / (sMax - sMin))) : 1;
     const len = lengths[q];
-    const lf = len > 1e-9 && med > 0 ? Math.min(1, Math.max(0.3, med / len)) : 1;
+    const lf = len > 1e-9 && med > 0 ? Math.min(1, Math.max(INTRA_LEN_FLOOR, (med / len) ** 1.5)) : 1;
     out[q] = INTRA_ALPHA_MAX * density * (0.35 + 0.65 * w) * lf;
   }
   return out;

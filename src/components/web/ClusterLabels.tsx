@@ -44,8 +44,16 @@ export function ClusterLabels({ labels, sizes, palette, unsorted, armed, hidden,
     state.current = { armed, hidden, maxVisible, topN };
   }, [armed, hidden, maxVisible, topN]);
 
+  // measure with display restored (visibility stays hidden), then take hidden pills out of
+  // layout: display:none, not visibility:hidden, so 400 off-screen labels are not text at rest
   useLayoutEffect(() => {
-    dims.current = btns.current.map(b => ({ w: b?.offsetWidth ?? 0, h: b?.offsetHeight ?? 0 }));
+    dims.current = btns.current.map(b => {
+      if (!b) return { w: 0, h: 0 };
+      b.style.display = '';
+      const d = { w: b.offsetWidth, h: b.offsetHeight };
+      if (b.style.visibility !== 'visible') b.style.display = 'none';
+      return d;
+    });
   }, [labels]);
 
   useEffect(() => {
@@ -77,11 +85,13 @@ export function ClusterLabels({ labels, sizes, palette, unsorted, armed, hidden,
           shown++;
           const it = items[i];
           b.style.transform = `translate3d(${Math.round(it.x - it.w / 2 + p.dx)}px, ${Math.round(it.y - it.h + p.dy)}px, 0)`;
+          b.style.display = '';
           b.style.visibility = 'visible';
           b.tabIndex = 0;
           b.removeAttribute('aria-hidden');
         } else {
           b.style.visibility = 'hidden';
+          b.style.display = 'none';
           b.tabIndex = -1;
           b.setAttribute('aria-hidden', 'true');
         }

@@ -238,7 +238,7 @@ export function Header() {
         <Link to="/" className="text-lg font-bold text-accent shrink-0 max-sm:flex max-sm:min-h-11 max-sm:items-center max-sm:-my-1.5">
           ARRA 🔮Racle
           <span
-            className="text-[10px] font-medium text-text-muted bg-bg-card px-1.5 py-0.5 rounded ml-2 align-middle max-sm:hidden"
+            className="text-[12px] font-medium text-text-muted bg-bg-card px-1.5 py-0.5 rounded ml-2 align-middle max-sm:hidden"
             title={backendVersion ? `ui ${__APP_VERSION__} · api ${backendVersion}` : `ui ${__APP_VERSION__}`}
           >
             {__APP_VERSION__}
