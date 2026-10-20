@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useReducer, useRef } from 'react';
+import { toolsMenuReducer, TOOLS_CLOSED } from '../lib/ui/tools-menu';
 import { useAuth } from '../contexts/AuthContext';
 import { API_BASE } from '../api/oracle';
 import { activeHost, apiUrl, hostLabel, isDefault, setStoredHost, clearStoredHost } from '../api/host';
@@ -116,7 +117,11 @@ function buildNavSet(items: MenuApiItem[]): NavSet {
 export function Header() {
   const location = useLocation();
   const { isAuthenticated, authEnabled, logout } = useAuth();
-  const [toolsOpen, setToolsOpen] = useState(false);
+  const [tools, toolsDispatch] = useReducer(toolsMenuReducer, TOOLS_CLOSED);
+  const toolsOpen = tools.open;
+  const toolsBtn = useRef<HTMLButtonElement>(null);
+  const toolsWrap = useRef<HTMLDivElement>(null);
+  const toolsMenu = useRef<HTMLDivElement>(null);
   const [stats, setStats] = useState({ searches: 0, learnings: 0 });
   const [backendVersion, setBackendVersion] = useState<string | null>(null);
   const [nav, setNav] = useState<NavSet>({ main: FALLBACK_NAV, tools: FALLBACK_TOOLS });
@@ -160,6 +165,26 @@ export function Header() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Tools menu: Esc + outside tap close it; a route change closes it; Esc returns focus
+  useEffect(() => {
+    if (!toolsOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); toolsDispatch({ type: 'escape' }); } };
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (toolsWrap.current?.contains(t) || toolsMenu.current?.contains(t)) return;
+      toolsDispatch({ type: 'outside' });
+    };
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('pointerdown', onDown, true);
+    return () => { window.removeEventListener('keydown', onKey, true); window.removeEventListener('pointerdown', onDown, true); };
+  }, [toolsOpen]);
+  useEffect(() => {
+    if (!tools.refocus) return;
+    toolsBtn.current?.focus();
+    toolsDispatch({ type: 'refocused' });
+  }, [tools.refocus]);
+  useEffect(() => { toolsDispatch({ type: 'navigate' }); }, [location.pathname]);
 
   const navItems = nav.main.filter(isNavVisible);
   const toolsItems = nav.tools.filter(isNavVisible);
@@ -206,9 +231,9 @@ export function Header() {
   }
 
   return (
-    <header className="bg-bg-secondary border-b border-border sticky top-0 z-50">
+    <header className="bg-bg-secondary border-b border-border sticky top-0 z-50" style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}>
       {/* Top row: logo + stats */}
-      <div className="flex justify-between items-center px-4 py-2">
+      <div className="flex justify-between items-center px-4 py-2 max-sm:py-1.5">
         <Link to="/" className="text-lg font-bold text-accent shrink-0">
           ARRA 🔮Racle
           <span
@@ -248,14 +273,14 @@ export function Header() {
           <span className="max-sm:hidden">{stats.searches}s</span>
           <span className="max-sm:hidden">{stats.learnings}l</span>
           <span className="w-px h-3 bg-border mx-1 max-sm:hidden" />
-          <Link to="/settings" className="p-1.5 rounded-md text-text-muted hover:text-accent hover:bg-bg-card transition-all duration-150" title="Settings">
+          <Link to="/settings" aria-label="Settings" className="p-1.5 rounded-md text-text-muted hover:text-accent hover:bg-bg-card transition-all duration-150 max-sm:flex max-sm:h-11 max-sm:w-11 max-sm:items-center max-sm:justify-center max-sm:-my-1.5" title="Settings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
           </Link>
           {authEnabled && isAuthenticated && (
-            <button onClick={logout} className="p-1.5 rounded-md text-text-muted hover:text-red-500 hover:bg-red-500/10 bg-transparent border-none cursor-pointer transition-all duration-150" title="Sign out">
+            <button onClick={logout} aria-label="Sign out" className="p-1.5 rounded-md text-text-muted hover:text-red-500 hover:bg-red-500/10 bg-transparent border-none cursor-pointer transition-all duration-150 max-sm:flex max-sm:h-11 max-sm:w-11 max-sm:items-center max-sm:justify-center max-sm:-my-1.5" title="Sign out">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
                 <polyline points="16 17 21 12 16 7" />
@@ -266,8 +291,10 @@ export function Header() {
         </div>
       </div>
 
-      {/* Nav row: full width, scrollable */}
-      <nav className="flex items-center gap-0.5 px-4 pb-2 flex-wrap">
+      {/* Nav row: wraps on wide screens; one horizontally scrollable row on phones with
+          an edge fade, Tools pinned outside the scroller (S3) */}
+      <nav className="flex items-center gap-0.5 px-4 pb-2 max-sm:pb-1 max-sm:pr-2">
+        <div className="web-nav-scroll flex min-w-0 flex-1 items-center gap-0.5 sm:flex-wrap max-sm:overflow-x-auto max-sm:overscroll-x-contain">
         {navItems.map(item => {
           const href = crossOriginHref(item);
           if (href) {
@@ -275,7 +302,7 @@ export function Header() {
               <a
                 key={href}
                 href={href}
-                className="px-2.5 py-1.5 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 text-text-secondary hover:bg-bg-card hover:text-accent border border-transparent"
+                className="px-2.5 py-1.5 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 text-text-secondary hover:bg-bg-card hover:text-accent border border-transparent max-sm:flex max-sm:min-h-11 max-sm:items-center max-sm:text-[14px]"
               >
                 {item.label}
               </a>
@@ -285,7 +312,7 @@ export function Header() {
             <Link
               key={item.path}
               to={item.path}
-              className={`px-2.5 py-1.5 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 ${
+              className={`px-2.5 py-1.5 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 max-sm:flex max-sm:min-h-11 max-sm:items-center max-sm:text-[14px] ${
                 isActive(item.path)
                   ? 'bg-accent/15 text-accent font-semibold border border-accent/20'
                   : 'text-text-secondary hover:bg-bg-card hover:text-accent border border-transparent'
@@ -295,30 +322,38 @@ export function Header() {
             </Link>
           );
         })}
+        </div>
 
-        <span className="w-px h-4 bg-border mx-2" />
+        <span className="w-px h-4 bg-border mx-2 max-sm:mx-1 shrink-0" />
 
-        {/* Tools dropdown */}
-        <div
-          className="relative"
-          onMouseEnter={() => setToolsOpen(true)}
-          onMouseLeave={() => setToolsOpen(false)}
-        >
+        {/* Tools menu: tap / click / keyboard (never hover-only); a bottom sheet on phones */}
+        <div ref={toolsWrap} className="relative shrink-0">
           <button
+            ref={toolsBtn}
             type="button"
-            className={`px-2.5 py-1.5 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 bg-transparent border-none cursor-pointer font-[inherit] ${
-              toolsItems.some(t => isActive(t.path))
+            aria-expanded={toolsOpen}
+            aria-controls="header-tools-menu"
+            onClick={() => toolsDispatch({ type: 'toggle' })}
+            className={`px-2.5 py-1.5 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 bg-transparent border-none cursor-pointer font-[inherit] max-sm:flex max-sm:min-h-11 max-sm:items-center max-sm:text-[14px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+              toolsItems.some(t => isActive(t.path)) || toolsOpen
                 ? 'bg-bg-card text-accent'
                 : 'text-text-secondary hover:bg-bg-card hover:text-accent'
             }`}
           >
-            Tools ▾
+            Tools <span aria-hidden>▾</span>
           </button>
           {toolsOpen && (
             <>
-              {/* Bridge gap */}
-              <div className="absolute top-full left-0 right-0 h-2" />
-              <div className="absolute top-[calc(100%+4px)] right-0 bg-bg-card border border-border rounded-xl p-1 min-w-[140px] shadow-lg z-[200]">
+              {/* phones: dim the page behind the sheet; a tap on it closes (outside-tap handler) */}
+              <div aria-hidden className="tools-backdrop sm:hidden fixed inset-0 z-[190] bg-black/45" />
+              <div
+                ref={toolsMenu}
+                id="header-tools-menu"
+                aria-label="Tools"
+                className="tools-menu z-[200] bg-bg-card border border-border p-1 shadow-lg sm:absolute sm:top-[calc(100%+4px)] sm:right-0 sm:min-w-[160px] sm:rounded-xl max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:max-h-[70vh] max-sm:overflow-y-auto max-sm:overscroll-contain max-sm:rounded-t-[20px] max-sm:px-3 max-sm:pt-3"
+                style={{ paddingBottom: 'max(4px, env(safe-area-inset-bottom, 0px))' }}
+              >
+                <div className="sm:hidden px-2 pb-2 text-[12px] font-semibold uppercase tracking-[0.14em] text-text-secondary">Tools</div>
                 {toolsItems.map(item => {
                   const href = crossOriginHref(item);
                   if (href) {
@@ -326,8 +361,8 @@ export function Header() {
                       <a
                         key={href}
                         href={href}
-                        className="block px-3 py-2 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 text-text-secondary hover:bg-white/5 hover:text-accent"
-                        onClick={() => setToolsOpen(false)}
+                        className="block px-3 py-2 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 text-text-secondary hover:bg-white/5 hover:text-accent max-sm:flex max-sm:min-h-11 max-sm:items-center max-sm:text-[15px]"
+                        onClick={() => toolsDispatch({ type: 'navigate' })}
                       >
                         {item.label}
                       </a>
@@ -337,12 +372,12 @@ export function Header() {
                     <Link
                       key={item.path}
                       to={item.path}
-                      className={`block px-3 py-2 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 ${
+                      className={`block px-3 py-2 rounded-lg text-[13px] whitespace-nowrap transition-all duration-150 max-sm:flex max-sm:min-h-11 max-sm:items-center max-sm:text-[15px] ${
                         isActive(item.path)
                           ? 'bg-accent/10 text-accent'
                           : 'text-text-secondary hover:bg-white/5 hover:text-accent'
                       }`}
-                      onClick={() => setToolsOpen(false)}
+                      onClick={() => toolsDispatch({ type: 'navigate' })}
                     >
                       {item.label}
                     </Link>

@@ -50,6 +50,9 @@ body {
   color: var(--text-primary);
   min-height: 100vh;
   line-height: 1.6;
+  /* viewport-fit=cover (index.html): keep content clear of the landscape notch */
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }
 
 a {
@@ -208,4 +211,30 @@ a {
 @media (prefers-reduced-motion: reduce) {
   .galaxy-sheet-in, .galaxy-sheet-out { animation: none; }
   .galaxy-tooltip { transition: none; }
+}
+
+/* ── Bottom sheets (components/ui/Sheet.tsx) + header Tools sheet + nav scroller ── */
+@keyframes uiSheetIn {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+@keyframes uiFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.ui-sheet-in { animation: uiSheetIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (max-width: 639.98px) {
+  .tools-menu { animation: uiSheetIn 0.28s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .tools-backdrop { animation: uiFadeIn 0.2s ease-out both; }
+  /* phones: one scrollable nav row; fade the trailing edge so it reads as "more →" */
+  .web-nav-scroll {
+    scrollbar-width: none;
+    padding-right: 24px; /* the last link can scroll clear of the fade */
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+  }
+  .web-nav-scroll::-webkit-scrollbar { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-sheet-in, .tools-menu, .tools-backdrop { animation: none; }
 }
