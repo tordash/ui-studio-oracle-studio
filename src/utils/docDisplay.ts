@@ -43,6 +43,7 @@ export function getDocDisplayInfo(sourceFile: string, project?: string | null): 
   const displayPath = sourceFile.startsWith('github.com/')
     ? sourceFile.replace(/^github\.com\/[^/]+\/[^/]+\//, '')
     : sourceFile;
+  const repoPath = repoRelativePath(displayPath, project);
 
   const isUniversal = !project;
   const vaultBase = getVaultBase();
@@ -56,10 +57,32 @@ export function getDocDisplayInfo(sourceFile: string, project?: string | null): 
     const ghProject = project.includes('github.com') ? project : `github.com/${project}`;
     if (vaultBase) projectVaultUrl = `${vaultBase}/${ghProject}`;
     projectDisplay = project.replace('github.com/', '');
-    fileUrl = `https://${ghProject}/blob/main/${displayPath}`;
+    fileUrl = repoPath == null ? null : `https://${ghProject}/blob/main/${repoPath}`;
   }
 
   if (vaultBase) vaultUrl = `${vaultBase}/${sourceFile}`;
 
   return { displayPath, projectVaultUrl, projectDisplay, vaultUrl, fileUrl, isUniversal };
+}
+
+/**
+ * Path inside the project's own repo, for a GitHub blob URL.
+ * Docs indexed from a sibling root carry `../Projects/<repo>/brain/…`: in a URL the
+ * `..` eats the `main` ref (github.com/o/r/blob/main/../Projects/… → blob/Projects/… → 404).
+ * Strips leading `./`; a `../` path also drops everything through its first `<repo>/` segment.
+ * Returns null when a `..` path never reaches the repo (no honest URL to build).
+ */
+export function repoRelativePath(path: string, project?: string | null): string | null {
+  let p = path.replace(/^(\.\.?\/)+/, '');
+  const climbed = p !== path && /^\.\.\//.test(path);
+  const repo = (project ?? '').replace(/\/+$/, '').split('/').pop()?.toLowerCase();
+  if (repo) {
+    const segs = p.split('/');
+    const i = segs.slice(0, -1).findIndex(seg => seg.toLowerCase() === repo);
+    if (climbed) {
+      if (i < 0) return null;
+      p = segs.slice(i + 1).join('/');
+    }
+  }
+  return p || null;
 }
