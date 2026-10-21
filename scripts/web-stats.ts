@@ -1,0 +1,55 @@
+// Dev only (not CI): reproduce the Knowledge Web design numbers from a saved /api/map3d response.
+//   curl -s <host>/api/map3d?model=bge-m3 > /tmp/map3d.json
+//   bun scripts/web-stats.ts /tmp/map3d.json
+// Never commit the snapshot itself.
+import { readFileSync } from 'fs';
+import { encodeForWorker } from '../src/lib/web/encode';
+import { interEdges, isDiffuse } from '../src/lib/web/inter';
+import { clusterLabels } from '../src/lib/web/keys';
+import { intraEdges } from '../src/lib/web/intra';
+import { clusterRadius, clusterStats, forceLayout, layoutBounds } from '../src/lib/web/layout';
+
+const path = process.argv[2];
+if (!path) { console.error('usage: bun scripts/web-stats.ts <map3d.json>'); process.exit(1); }
+const data = JSON.parse(readFileSync(path, 'utf8'));
+const t0 = performance.now();
+const e = encodeForWorker(data.documents);
+const t1 = performance.now();
+const r = interEdges(e);
+const t2 = performance.now();
+const L = clusterLabels(e.clusterKeys);
+const label = (i: number) => L.get(e.clusterKeys[i]) ?? e.clusterKeys[i];
+const maxDeg = Math.max(...r.degree);
+const ex = r.edges.map(x => x.top5).sort((a, b) => a - b);
+console.log(`files ${e.n} · clusters ${e.clusterKeys.length} · concepts ${e.conceptNames.length}`);
+console.log(`inter: ${r.edges.length} edges · max degree ${maxDeg} (${label(r.degree.indexOf(maxDeg))}) · ${r.orphans.length} orphans: ${r.orphans.map(label).join(', ')}`);
+console.log(`top-5 share of weight: median ${ex[ex.length >> 1].toFixed(2)} · p10 ${ex[Math.floor(ex.length / 10)].toFixed(2)} · diffuse edges ${r.edges.filter(isDiffuse).length}`);
+console.log(`time: encode ${(t1 - t0).toFixed(1)} ms · inter ${(t2 - t1).toFixed(1)} ms`);
+for (const x of r.edges.slice(0, 10)) {
+  console.log(`  ${label(x.a)} ↔ ${label(x.b)}  ${x.w.toFixed(3)}  ${x.evidence.slice(0, 3).map(v => `${v.concept} ${Math.round(v.share * 100)}%`).join(', ')}`);
+}
+
+// intra coverage for the design's reference clusters (§3.3)
+for (const key of ['∅', 'own/marketing-agency-team', 'own/tor-oracle', 'own/somtor-oracle']) {
+  const c = e.clusterKeys.indexOf(key);
+  if (c < 0) continue;
+  const s = performance.now();
+  const r = intraEdges(e, c);
+  const ms = performance.now() - s;
+  console.log(`intra ${label(c)}: ${r.members.length} files · posting ops ${r.postingOps.toLocaleString()} · coverage ${(r.coverage * 100).toFixed(1)}% · ${r.edgeI.length.toLocaleString()} edges · ${ms.toFixed(0)} ms`);
+}
+
+// layout (§3.1)
+{
+  const s0 = performance.now();
+  const st = clusterStats(e);
+  const radii = [...st.sizes].map(clusterRadius);
+  const centres = forceLayout(st.means, radii, r.edges);
+  const b = layoutBounds(centres, radii);
+  let worst = Infinity;
+  for (let a = 0; a < radii.length; a++) for (let q = a + 1; q < radii.length; q++) {
+    const d = Math.hypot(centres[a * 3] - centres[q * 3], centres[a * 3 + 1] - centres[q * 3 + 1], centres[a * 3 + 2] - centres[q * 3 + 2]);
+    worst = Math.min(worst, d / (radii[a] + radii[q]));
+  }
+  console.log(`layout: scene radius ${b.radius.toFixed(1)} · min gap ratio ${worst.toFixed(2)} · ${(performance.now() - s0).toFixed(1)} ms`);
+}

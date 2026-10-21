@@ -13,36 +13,14 @@ import { DocSheet } from '../components/galaxy/DocSheet';
 import { GALAXY_FONT_STACK } from '../components/galaxy/engine';
 import type { GalaxyEngine } from '../components/galaxy/engine';
 import { getReducedMotion, subscribeReducedMotion, webglAvailable } from '../lib/three';
+import { FillViewport as GalaxyShell } from '../components/FillViewport';
+import { GLASS as glass, SPACE_BG } from '../lib/ui/space';
+import { ViewSwitch } from '../components/web/ViewSwitch';
 
 const DEFAULT_ENGINE = 'bge-m3';
 const SEARCH_LIMIT = 100;
 
 interface PcaInfo { variance_explained?: number[]; n_vectors?: number; computed_at?: string }
-
-// The global nav wraps (~64 px desktop, ~124 px at 390), so the page measures where it starts
-// instead of assuming a header height, and fills the rest of the dynamic viewport (iOS bars).
-function GalaxyShell({ className, style, children }: { className: string; style: React.CSSProperties; children: React.ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const update = () => {
-      const top = Math.max(0, Math.round(el.getBoundingClientRect().top + window.scrollY));
-      el.style.height = `calc(100vh - ${top}px)`; // fallback where dvh is unsupported (invalid value is ignored)
-      el.style.height = `calc(100dvh - ${top}px)`;
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    const header = document.querySelector('header');
-    if (header) ro.observe(header);
-    window.addEventListener('resize', update);
-    return () => { ro.disconnect(); window.removeEventListener('resize', update); };
-  }, []);
-  // height is owned by the layout effect (runs before paint), never by React's style prop
-  return <div ref={ref} className={className} style={style}>{children}</div>;
-}
-
-const glass = { background: 'rgba(9, 10, 22, 0.66)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' } as const;
 
 export function Map() {
   const reducedMotion = useSyncExternalStore(subscribeReducedMotion, getReducedMotion, () => false);
@@ -356,6 +334,9 @@ export function Map() {
           </div>
         </div>
 
+        {/* Galaxy | Web switch — /graph isn't in the arra menu yet (ต่อ Q3) */}
+        <ViewSwitch active="galaxy" className="absolute bottom-3 right-3 z-10 sm:bottom-4 sm:right-4" style={glass} />
+
         {/* camera controls */}
         {!useFallback && data.count > 0 && (
           <div className="absolute right-3 sm:right-4 top-1/2 -translate-y-1/2 z-10 flex flex-col gap-1.5">
@@ -472,11 +453,6 @@ export function Map() {
     </GalaxyShell>
   );
 }
-
-const SPACE_BG =
-  'radial-gradient(1100px 760px at 62% 38%, rgba(58, 66, 150, 0.22), transparent 62%),' +
-  'radial-gradient(800px 640px at 18% 82%, rgba(120, 64, 150, 0.12), transparent 60%),' +
-  'linear-gradient(180deg, #05060f 0%, #03030a 100%)';
 
 function SideStat({ value, label }: { value: number; label: string }) {
   return (

@@ -4,3 +4,5 @@ export { subscribeReducedMotion, getReducedMotion } from './reduced-motion';
 export { bindRenderGate } from './render-gate';
 export type { RenderGateHandlers } from './render-gate';
 export { GLOW_POINT_FRAG } from './shaders';
+export { classifyTier, probeGpuTier } from './gpu-tier';
+export type { GpuTier, TierProbe } from './gpu-tier';
