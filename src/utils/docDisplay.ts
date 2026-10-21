@@ -59,6 +59,10 @@ export function getDocDisplayInfo(sourceFile: string, project?: string | null): 
     projectDisplay = project.replace('github.com/', '');
     fileUrl = repoPath == null ? null : `https://${ghProject}/blob/main/${repoPath}`;
   }
+  // a path that names its repo (github.com/<owner>/<repo>/…, or a ~/ghq clone of one) links
+  // there, project tag or not
+  const named = sourceFile.match(/^(?:(?:\.\.\/)+ghq\/)?(github\.com\/[^/]+\/[^/]+)\/(.+)$/);
+  if (named) fileUrl = `https://${named[1]}/blob/main/${named[2]}`;
 
   if (vaultBase) vaultUrl = `${vaultBase}/${sourceFile}`;
 
@@ -70,7 +74,8 @@ export function getDocDisplayInfo(sourceFile: string, project?: string | null): 
  * Docs indexed from a sibling root carry `../Projects/<repo>/brain/…`: in a URL the
  * `..` eats the `main` ref (github.com/o/r/blob/main/../Projects/… → blob/Projects/… → 404).
  * Strips leading `./`; a `../` path also drops everything through its first `<repo>/` segment.
- * Returns null when a `..` path never reaches the repo (no honest URL to build).
+ * Returns null when a `..` path never reaches the repo, or for a bare `ψ/` vault path
+ * (no honest URL to build).
  */
 export function repoRelativePath(path: string, project?: string | null): string | null {
   let p = path.replace(/^(\.\.?\/)+/, '');
@@ -84,5 +89,8 @@ export function repoRelativePath(path: string, project?: string | null): string 
       p = segs.slice(i + 1).join('/');
     }
   }
+  // bare ψ/… = written into the arra vault by arra_learn; the project tag names the caller,
+  // not the repo holding the file (0 of 32 sampled exist there, 21 Oct 2026) → no link
+  if (!climbed && /^ψ\//.test(p)) return null;
   return p || null;
 }
